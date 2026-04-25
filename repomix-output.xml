@@ -1,0 +1,3973 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+01_basic_react_agent.py
+02_langgraph_state_agent.py
+03_supervisor_multiagent.py
+04_plan_execute_agent.py
+05_reflection_agent.py
+06_multi_agent_network.py
+07_hierarchical_agents.py
+08_memory_agent.py
+09_agentic_rag.py
+config.py
+requirements.txt
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="01_basic_react_agent.py">
+# ============================================================
+# 01_basic_react_agent.py
+# ─────────────────────────────────────────────────────────────
+# The ReAct (Reason + Act) pattern: the simplest agent loop.
+# The LLM alternates between Thought → Action → Observation
+# until it decides it has a final answer.
+#
+# Architecture:
+#   User ──► Agent (LLM + tools) ──► Tool calls ──► Final answer
+# ============================================================
+
+from config import OPENAI_API_KEY, GPT4O_MINI, print_step, console
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+import math, json, requests
+from datetime import datetime
+
+# ── 1. Define Tools ───────────────────────────────────────────
+# Tools are just Python functions decorated with @tool.
+# The docstring becomes the tool's description for the LLM.
+
+@tool
+def calculator(expression: str) -> str:
+    """
+    Evaluate a mathematical expression safely.
+    Supports: +, -, *, /, **, sqrt, sin, cos, log, etc.
+    Example input: "sqrt(144) + 2**10"
+    """
+    try:
+        # Safe eval with only math functions
+        allowed = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
+        allowed.update({"abs": abs, "round": round, "pow": pow})
+        result = eval(expression, {"__builtins__": {}}, allowed)
+        return f"Result: {result}"
+    except Exception as e:
+        return f"Error evaluating '{expression}': {e}"
+
+
+@tool
+def get_current_time(timezone: str = "UTC") -> str:
+    """
+    Get the current date and time.
+    Args:
+        timezone: Timezone name (e.g., 'UTC', 'US/Eastern'). Default is UTC.
+    """
+    now = datetime.utcnow()
+    return f"Current time (UTC): {now.strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+@tool
+def search_wikipedia(query: str) -> str:
+    """
+    Search Wikipedia and return a summary of the topic.
+    Use this to look up facts, history, science, people, etc.
+    Args:
+        query: The search term to look up on Wikipedia.
+    """
+    try:
+        import wikipedia
+        result = wikipedia.summary(query, sentences=3)
+        return result
+    except Exception as e:
+        return f"Wikipedia search failed: {e}. Try a more specific query."
+
+
+@tool
+def get_weather(city: str) -> str:
+    """
+    Get current weather information for a city.
+    Args:
+        city: Name of the city (e.g., 'London', 'New York', 'Tokyo')
+    """
+    # Using free wttr.in API — no key needed
+    try:
+        url = f"https://wttr.in/{city}?format=j1"
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        current = data["current_condition"][0]
+        return (
+            f"Weather in {city}: "
+            f"{current['weatherDesc'][0]['value']}, "
+            f"Temp: {current['temp_C']}°C / {current['temp_F']}°F, "
+            f"Humidity: {current['humidity']}%, "
+            f"Wind: {current['windspeedKmph']} km/h"
+        )
+    except Exception as e:
+        return f"Could not fetch weather for {city}: {e}"
+
+
+@tool
+def unit_converter(value: float, from_unit: str, to_unit: str) -> str:
+    """
+    Convert between common units of measurement.
+    Supports: km/miles, kg/lbs, celsius/fahrenheit, liters/gallons
+    Args:
+        value: The numeric value to convert
+        from_unit: The source unit (e.g., 'km', 'kg', 'celsius', 'liters')
+        to_unit: The target unit (e.g., 'miles', 'lbs', 'fahrenheit', 'gallons')
+    """
+    conversions = {
+        ("km", "miles"):       lambda v: v * 0.621371,
+        ("miles", "km"):       lambda v: v * 1.60934,
+        ("kg", "lbs"):         lambda v: v * 2.20462,
+        ("lbs", "kg"):         lambda v: v * 0.453592,
+        ("celsius", "fahrenheit"): lambda v: v * 9/5 + 32,
+        ("fahrenheit", "celsius"): lambda v: (v - 32) * 5/9,
+        ("liters", "gallons"): lambda v: v * 0.264172,
+        ("gallons", "liters"): lambda v: v * 3.78541,
+        ("meters", "feet"):    lambda v: v * 3.28084,
+        ("feet", "meters"):    lambda v: v * 0.3048,
+    }
+    key = (from_unit.lower(), to_unit.lower())
+    if key in conversions:
+        result = conversions[key](value)
+        return f"{value} {from_unit} = {result:.4f} {to_unit}"
+    return f"Conversion from {from_unit} to {to_unit} not supported."
+
+
+# ── 2. Build the Agent ────────────────────────────────────────
+def create_react_agent():
+    """Create a ReAct agent with all tools."""
+    
+    llm = ChatOpenAI(
+        model=GPT4O_MINI,
+        temperature=0,          # deterministic for tool calls
+        api_key=OPENAI_API_KEY,
+    )
+    
+    tools = [calculator, get_current_time, search_wikipedia, get_weather, unit_converter]
+    
+    # Prompt structure: system → history → user input → agent scratchpad
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are a helpful AI assistant with access to tools.
+        
+When answering questions:
+1. Think about what tools you need
+2. Use tools to gather accurate information
+3. Synthesize the results into a clear, helpful answer
+4. Always be honest if you don't know something
+
+Available tools: calculator, get_current_time, search_wikipedia, get_weather, unit_converter"""),
+        MessagesPlaceholder(variable_name="chat_history", optional=True),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),  # where tool calls go
+    ])
+    
+    # create_tool_calling_agent uses the model's native function-calling
+    agent = create_tool_calling_agent(llm, tools, prompt)
+    
+    # AgentExecutor runs the loop: agent → tool → agent → ... → final answer
+    executor = AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=True,           # prints each step
+        max_iterations=10,      # safety limit
+        handle_parsing_errors=True,
+        return_intermediate_steps=True,  # gives you full trace
+    )
+    
+    return executor
+
+
+# ── 3. Run Examples ───────────────────────────────────────────
+def run_examples():
+    console.print("\n[bold magenta]═══ 01: Basic ReAct Agent ═══[/bold magenta]\n")
+    
+    agent = create_react_agent()
+    
+    test_questions = [
+        "What is the square root of 1764 plus 2 to the power of 8?",
+        "How many miles is 42.195 km (a marathon)?",
+        "Who invented the telephone and when?",
+        "What's the weather like in Tokyo right now?",
+        "What time is it in UTC, and what day of the week is that?",
+    ]
+    
+    for i, question in enumerate(test_questions, 1):
+        print_step(f"Question {i}", question, "cyan")
+        
+        result = agent.invoke({"input": question})
+        
+        print_step(f"Answer {i}", result["output"], "green")
+        
+        # Show intermediate steps (tool calls)
+        if result.get("intermediate_steps"):
+            steps_summary = []
+            for action, observation in result["intermediate_steps"]:
+                steps_summary.append(f"→ Tool: {action.tool}({action.tool_input}) → {str(observation)[:100]}")
+            console.print("\n[dim]Tool calls made:[/dim]")
+            for s in steps_summary:
+                console.print(f"  [dim]{s}[/dim]")
+        
+        console.print("\n" + "─" * 60)
+
+
+# ── 4. Multi-turn conversation with memory ────────────────────
+def run_with_memory():
+    """Show how to maintain conversation context."""
+    from langchain_core.chat_history import InMemoryChatMessageHistory
+    from langchain_core.runnables.history import RunnableWithMessageHistory
+    
+    console.print("\n[bold magenta]═══ ReAct Agent with Chat History ═══[/bold magenta]\n")
+    
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    tools = [calculator, search_wikipedia, get_weather]
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful assistant. Use tools when needed. Remember the conversation history."),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
+    
+    agent = create_tool_calling_agent(llm, tools, prompt)
+    executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
+    
+    # Wrap with message history
+    store = {}
+    def get_session_history(session_id: str):
+        if session_id not in store:
+            store[session_id] = InMemoryChatMessageHistory()
+        return store[session_id]
+    
+    agent_with_history = RunnableWithMessageHistory(
+        executor,
+        get_session_history,
+        input_messages_key="input",
+        history_messages_key="chat_history",
+    )
+    
+    session = {"configurable": {"session_id": "demo-session-1"}}
+    
+    # Multi-turn conversation
+    turns = [
+        "My name is Alex and I'm planning a trip to Paris.",
+        "What's the weather like there?",
+        "How many miles is it from New York to Paris? (5,836 km)",
+        "Based on everything we discussed, give me a quick trip summary.",
+    ]
+    
+    for msg in turns:
+        console.print(f"\n[bold white]USER:[/bold white] {msg}")
+        result = agent_with_history.invoke({"input": msg}, config=session)
+        console.print(f"[bold green]AGENT:[/bold green] {result['output']}")
+
+
+if __name__ == "__main__":
+    run_examples()
+    run_with_memory()
+</file>
+
+<file path="02_langgraph_state_agent.py">
+# ============================================================
+# 02_langgraph_state_agent.py
+# ─────────────────────────────────────────────────────────────
+# LangGraph turns agents into explicit STATE MACHINES.
+# Every node is a Python function. Edges decide what runs next.
+# This gives you full control, checkpointing, and human-in-loop.
+#
+# Architecture (graph):
+#
+#   START → agent_node → (tool calls?) → tool_node → agent_node
+#                      ↓ (no tools)
+#                     END
+# ============================================================
+
+from config import OPENAI_API_KEY, GPT4O_MINI, print_step, console
+
+from typing import Annotated, Literal
+from typing_extensions import TypedDict
+
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages   # reducer: appends messages
+from langgraph.prebuilt import ToolNode            # auto-runs tool calls from AI messages
+from langgraph.checkpoint.memory import MemorySaver
+
+import json, math, requests
+
+
+# ── 1. Define the State ────────────────────────────────────────
+# State is a TypedDict. Every node receives it and returns updates.
+# `add_messages` is a reducer — it APPENDS new messages instead of replacing.
+
+class AgentState(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+    # You can add any extra fields you want:
+    iteration_count: int
+    metadata: dict
+
+
+# ── 2. Define Tools ───────────────────────────────────────────
+
+@tool
+def web_search(query: str) -> str:
+    """Search the web for current information. Use for news, facts, recent events."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=3))
+        if not results:
+            return "No results found."
+        output = []
+        for r in results:
+            output.append(f"Title: {r['title']}\nSnippet: {r['body']}\nURL: {r['href']}\n")
+        return "\n---\n".join(output)
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+@tool
+def python_repl(code: str) -> str:
+    """
+    Execute Python code and return the result.
+    Use for calculations, data manipulation, generating content.
+    The code runs in a sandboxed environment.
+    Always print() results you want to see.
+    """
+    import io, sys
+    old_stdout = sys.stdout
+    sys.stdout = buffer = io.StringIO()
+    try:
+        exec(code, {"__builtins__": __builtins__, "math": math, "json": json})
+        output = buffer.getvalue()
+        return output if output else "Code executed successfully (no output)"
+    except Exception as e:
+        return f"Error: {type(e).__name__}: {e}"
+    finally:
+        sys.stdout = old_stdout
+
+
+@tool
+def read_file(filepath: str) -> str:
+    """Read a text file and return its contents. Useful for analyzing documents."""
+    try:
+        with open(filepath, "r") as f:
+            content = f.read()
+        return content[:5000]  # truncate large files
+    except FileNotFoundError:
+        return f"File not found: {filepath}"
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+
+@tool
+def write_file(filepath: str, content: str) -> str:
+    """Write content to a file. Useful for saving results or creating documents."""
+    try:
+        with open(filepath, "w") as f:
+            f.write(content)
+        return f"Successfully wrote {len(content)} characters to {filepath}"
+    except Exception as e:
+        return f"Error writing file: {e}"
+
+
+# ── 3. Build the Graph ────────────────────────────────────────
+
+def build_agent_graph(tools: list, system_prompt: str = None):
+    """
+    Build a LangGraph agent graph.
+    Returns a compiled graph (callable like a function).
+    """
+    
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    llm_with_tools = llm.bind_tools(tools)
+    
+    system_prompt = system_prompt or """You are a powerful AI assistant with access to tools.
+Think step by step. Use tools when you need information or need to perform actions.
+Always provide clear, accurate, and helpful responses."""
+    
+    # ── Node 1: The LLM agent ─────────────────────────────────
+    def agent_node(state: AgentState) -> dict:
+        """The brain: calls the LLM with current messages."""
+        messages = state["messages"]
+        
+        # Inject system prompt at the start
+        from langchain_core.messages import SystemMessage
+        if not any(isinstance(m, SystemMessage) for m in messages):
+            messages = [SystemMessage(content=system_prompt)] + messages
+        
+        response = llm_with_tools.invoke(messages)
+        
+        return {
+            "messages": [response],
+            "iteration_count": state.get("iteration_count", 0) + 1,
+        }
+    
+    # ── Node 2: Tool executor ─────────────────────────────────
+    # ToolNode automatically finds tool_calls in the last AI message,
+    # runs each tool, and wraps results in ToolMessage objects.
+    tool_node = ToolNode(tools)
+    
+    # ── Conditional edge: should we call tools or finish? ─────
+    def should_continue(state: AgentState) -> Literal["tools", "end"]:
+        """Route: if last message has tool calls → tools node, else → end."""
+        last_message = state["messages"][-1]
+        
+        # Safety: stop after too many iterations
+        if state.get("iteration_count", 0) > 15:
+            return "end"
+        
+        # If the LLM made tool calls, execute them
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+        
+        return "end"
+    
+    # ── Assemble the graph ────────────────────────────────────
+    graph = StateGraph(AgentState)
+    
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", tool_node)
+    
+    graph.add_edge(START, "agent")
+    
+    graph.add_conditional_edges(
+        "agent",
+        should_continue,
+        {"tools": "tools", "end": END},
+    )
+    
+    # After tools run, always go back to agent for reflection
+    graph.add_edge("tools", "agent")
+    
+    # Add checkpointing (persistent memory across invocations)
+    checkpointer = MemorySaver()
+    compiled = graph.compile(checkpointer=checkpointer)
+    
+    return compiled
+
+
+# ── 4. Visualize the Graph ────────────────────────────────────
+
+def show_graph_structure(graph):
+    """Print the graph nodes and edges."""
+    console.print("\n[bold cyan]Graph Structure:[/bold cyan]")
+    try:
+        # Mermaid diagram output
+        mermaid = graph.get_graph().draw_mermaid()
+        console.print(f"[dim]{mermaid}[/dim]")
+    except Exception:
+        console.print("[dim]Graph visualization not available[/dim]")
+
+
+# ── 5. Stream the Agent (real-time output) ────────────────────
+
+def stream_agent(graph, query: str, thread_id: str = "thread-1"):
+    """
+    Stream agent execution — see each node's output as it happens.
+    Uses thread_id for checkpointing (conversation persistence).
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    
+    inputs = {
+        "messages": [HumanMessage(content=query)],
+        "iteration_count": 0,
+        "metadata": {},
+    }
+    
+    console.print(f"\n[bold white]USER:[/bold white] {query}\n")
+    
+    final_answer = None
+    
+    # stream_mode="updates" emits each node's state update
+    for event in graph.stream(inputs, config=config, stream_mode="updates"):
+        for node_name, node_output in event.items():
+            if node_name == "agent":
+                last_msg = node_output["messages"][-1]
+                
+                if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                    for tc in last_msg.tool_calls:
+                        console.print(f"  [bold yellow]🔧 Calling tool:[/bold yellow] {tc['name']}({json.dumps(tc['args'])[:80]})")
+                else:
+                    final_answer = last_msg.content
+                    
+            elif node_name == "tools":
+                for msg in node_output["messages"]:
+                    if isinstance(msg, ToolMessage):
+                        console.print(f"  [bold blue]📋 Tool result ({msg.name}):[/bold blue] {str(msg.content)[:120]}...")
+    
+    if final_answer:
+        console.print(f"\n[bold green]AGENT:[/bold green] {final_answer}")
+    
+    return final_answer
+
+
+# ── 6. Human-in-the-Loop Pattern ─────────────────────────────
+
+def build_agent_with_interrupt(tools: list):
+    """
+    Build an agent that PAUSES before executing tools,
+    allowing a human to approve or reject each tool call.
+    This is the 'human-in-the-loop' pattern.
+    """
+    from langgraph.graph import StateGraph
+    
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    llm_with_tools = llm.bind_tools(tools)
+    
+    def agent_node(state: AgentState) -> dict:
+        response = llm_with_tools.invoke(state["messages"])
+        return {"messages": [response], "iteration_count": state.get("iteration_count", 0) + 1}
+    
+    def should_continue(state: AgentState) -> Literal["tools", "end"]:
+        last = state["messages"][-1]
+        if hasattr(last, "tool_calls") and last.tool_calls:
+            return "tools"
+        return "end"
+    
+    tool_node = ToolNode(tools)
+    
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", tool_node)
+    graph.add_edge(START, "agent")
+    graph.add_conditional_edges("agent", should_continue, {"tools": "tools", "end": END})
+    graph.add_edge("tools", "agent")
+    
+    checkpointer = MemorySaver()
+    
+    # ↓↓↓ THE KEY: interrupt_before=["tools"] pauses before tool execution
+    compiled = graph.compile(
+        checkpointer=checkpointer,
+        interrupt_before=["tools"],   # pause here for human approval
+    )
+    return compiled
+
+
+def run_with_human_approval(query: str):
+    """Demo of human-in-the-loop approval workflow."""
+    tools = [web_search, python_repl]
+    graph = build_agent_with_interrupt(tools)
+    
+    config = {"configurable": {"thread_id": "human-loop-demo"}}
+    inputs = {
+        "messages": [HumanMessage(content=query)],
+        "iteration_count": 0,
+        "metadata": {},
+    }
+    
+    console.print(f"\n[bold white]USER:[/bold white] {query}")
+    
+    # First run — will stop before tool execution
+    result = graph.invoke(inputs, config=config)
+    last_msg = result["messages"][-1]
+    
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        for tc in last_msg.tool_calls:
+            console.print(f"\n[bold yellow]⚠️  Agent wants to call:[/bold yellow] {tc['name']}")
+            console.print(f"[dim]   Args: {tc['args']}[/dim]")
+            
+            # In a real app, you'd show this to the user via UI
+            approval = input("   Approve? (y/n): ").strip().lower()
+            
+            if approval != "y":
+                # Inject a rejection message and continue without the tool
+                result["messages"].append(
+                    HumanMessage(content=f"Do not use the {tc['name']} tool. Answer without it.")
+                )
+    
+    # Resume the graph (continues from where it paused)
+    final = graph.invoke(None, config=config)  # None = resume from checkpoint
+    console.print(f"\n[bold green]AGENT:[/bold green] {final['messages'][-1].content}")
+
+
+# ── 7. Main demo ──────────────────────────────────────────────
+
+if __name__ == "__main__":
+    console.print("[bold magenta]═══ 02: LangGraph State Machine Agent ═══[/bold magenta]")
+    
+    tools = [web_search, python_repl, write_file]
+    graph = build_agent_graph(tools)
+    
+    show_graph_structure(graph)
+    
+    # Demo 1: Basic query
+    stream_agent(graph, "Calculate the first 10 Fibonacci numbers using Python.")
+    
+    # Demo 2: Persistent memory — follow-up question in same thread
+    stream_agent(graph, "Now square each of those numbers.", thread_id="thread-1")
+    
+    # Demo 3: New thread (fresh context)
+    stream_agent(
+        graph,
+        "Write a Python function to check if a number is prime, test it with 17 and 20, and save the code to /tmp/prime_checker.py",
+        thread_id="thread-2"
+    )
+    
+    # Demo 4: Human-in-the-loop
+    # run_with_human_approval("Search the web for the latest AI news")
+</file>
+
+<file path="03_supervisor_multiagent.py">
+# ============================================================
+# 03_supervisor_multiagent.py
+# ─────────────────────────────────────────────────────────────
+# SUPERVISOR ARCHITECTURE — the "manager" pattern.
+# One supervisor LLM routes tasks to specialized sub-agents.
+# Sub-agents report back, supervisor decides what's next.
+#
+# Architecture:
+#
+#          ┌─────────────┐
+#          │  SUPERVISOR │  ← routes work, synthesizes results
+#          └──────┬──────┘
+#         ┌───────┼────────┐
+#    ┌────▼───┐ ┌─▼──────┐ ┌▼───────┐
+#    │RESEARCH│ │ CODER  │ │ WRITER │   ← specialist sub-agents
+#    └────────┘ └────────┘ └────────┘
+# ============================================================
+
+from config import OPENAI_API_KEY, GPT4O_MINI, GPT4O, console, print_agent_message
+
+from typing import Annotated, Literal, Sequence
+from typing_extensions import TypedDict
+
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+from pydantic import BaseModel
+import json
+
+
+# ── 1. Shared State ───────────────────────────────────────────
+
+class SupervisorState(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+    next_agent: str          # which agent runs next
+    task: str                # original user task
+    research_output: str     # what researcher found
+    code_output: str         # what coder produced
+    writer_output: str       # what writer created
+    final_answer: str        # supervisor's synthesis
+
+
+# ── 2. Sub-Agent Tools ────────────────────────────────────────
+
+@tool
+def search_web(query: str) -> str:
+    """Search the web for information."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=4))
+        return "\n\n".join(f"**{r['title']}**\n{r['body']}" for r in results)
+    except Exception as e:
+        return f"Search error: {e}. Returning mock result for demo: The topic '{query}' is an important area of study."
+
+
+@tool
+def fetch_url(url: str) -> str:
+    """Fetch and return the text content of a web page."""
+    try:
+        import requests
+        resp = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        # Very basic text extraction
+        text = resp.text
+        # Remove HTML tags simply
+        import re
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:3000]
+    except Exception as e:
+        return f"Could not fetch URL: {e}"
+
+
+@tool
+def run_python(code: str) -> str:
+    """Execute Python code and return output."""
+    import io, sys
+    old_stdout = sys.stdout
+    sys.stdout = buffer = io.StringIO()
+    try:
+        import math, json, re
+        exec(code, {"__builtins__": __builtins__, "math": math, "json": json, "re": re})
+        return buffer.getvalue() or "Executed successfully (no print output)"
+    except Exception as e:
+        return f"Error: {type(e).__name__}: {e}"
+    finally:
+        sys.stdout = old_stdout
+
+
+@tool
+def format_document(content: str, format: str = "markdown") -> str:
+    """Format and structure content into a professional document."""
+    # In production this might call a template engine or document API
+    formatted = f"""# Document
+    
+{content}
+
+---
+*Generated by AI Writer Agent*
+"""
+    return formatted
+
+
+# ── 3. Individual Sub-Agents ──────────────────────────────────
+
+def make_researcher_agent():
+    """Research specialist: searches web, finds facts, summarizes."""
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.1, api_key=OPENAI_API_KEY)
+    tools = [search_web, fetch_url]
+    llm_with_tools = llm.bind_tools(tools)
+    tool_node = ToolNode(tools)
+    
+    system = """You are a Research Specialist Agent. Your job is to:
+1. Search for accurate, up-to-date information on topics
+2. Summarize findings clearly with sources
+3. Identify key facts, statistics, and insights
+4. Always be thorough but concise
+
+When you have gathered enough information, provide a structured research report."""
+
+    def researcher_node(state: SupervisorState) -> dict:
+        messages = [SystemMessage(content=system)] + state["messages"]
+        
+        # Run the mini ReAct loop for researcher
+        for _ in range(5):  # max 5 tool calls
+            response = llm_with_tools.invoke(messages)
+            messages.append(response)
+            
+            if not (hasattr(response, "tool_calls") and response.tool_calls):
+                break  # no more tool calls → done
+            
+            # Execute tools
+            tool_results = tool_node.invoke({"messages": messages})
+            messages.extend(tool_results["messages"])
+        
+        research_text = messages[-1].content
+        print_agent_message("researcher", f"Research complete: {research_text[:100]}...")
+        
+        return {
+            "messages": [AIMessage(content=f"[RESEARCHER]: {research_text}")],
+            "research_output": research_text,
+        }
+    
+    return researcher_node
+
+
+def make_coder_agent():
+    """Code specialist: writes, runs, and debugs Python code."""
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    tools = [run_python]
+    llm_with_tools = llm.bind_tools(tools)
+    tool_node = ToolNode(tools)
+    
+    system = """You are a Coding Specialist Agent. Your job is to:
+1. Write clean, efficient, well-documented Python code
+2. Test your code by running it
+3. Debug any errors you encounter
+4. Explain what the code does and how to use it
+
+Always run your code to verify it works before presenting the final solution."""
+
+    def coder_node(state: SupervisorState) -> dict:
+        # Include research output as context if available
+        context = ""
+        if state.get("research_output"):
+            context = f"\n\nContext from research:\n{state['research_output']}"
+        
+        task_msg = HumanMessage(content=state["task"] + context)
+        messages = [SystemMessage(content=system), task_msg]
+        
+        for _ in range(6):
+            response = llm_with_tools.invoke(messages)
+            messages.append(response)
+            
+            if not (hasattr(response, "tool_calls") and response.tool_calls):
+                break
+            
+            tool_results = tool_node.invoke({"messages": messages})
+            messages.extend(tool_results["messages"])
+        
+        code_text = messages[-1].content
+        print_agent_message("coder", f"Code complete: {code_text[:100]}...")
+        
+        return {
+            "messages": [AIMessage(content=f"[CODER]: {code_text}")],
+            "code_output": code_text,
+        }
+    
+    return coder_node
+
+
+def make_writer_agent():
+    """Writing specialist: synthesizes research into polished content."""
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.7, api_key=OPENAI_API_KEY)
+    
+    system = """You are a Writing Specialist Agent. Your job is to:
+1. Take research findings and code examples
+2. Synthesize them into clear, engaging, well-structured content
+3. Adapt the tone to the audience (technical vs general)
+4. Use markdown formatting for readability
+5. Produce polished, professional output"""
+
+    def writer_node(state: SupervisorState) -> dict:
+        # Gather all previous outputs
+        context_parts = []
+        if state.get("research_output"):
+            context_parts.append(f"Research:\n{state['research_output']}")
+        if state.get("code_output"):
+            context_parts.append(f"Code:\n{state['code_output']}")
+        
+        context = "\n\n---\n\n".join(context_parts)
+        
+        prompt = f"""Task: {state['task']}
+        
+Available context:
+{context}
+
+Please write a comprehensive, well-structured response that incorporates all the above information."""
+        
+        messages = [SystemMessage(content=system), HumanMessage(content=prompt)]
+        response = llm.invoke(messages)
+        
+        writer_text = response.content
+        print_agent_message("writer", f"Writing complete: {writer_text[:100]}...")
+        
+        return {
+            "messages": [AIMessage(content=f"[WRITER]: {writer_text}")],
+            "writer_output": writer_text,
+        }
+    
+    return writer_node
+
+
+# ── 4. Supervisor Agent ───────────────────────────────────────
+
+class RouterDecision(BaseModel):
+    """Structured output from supervisor routing."""
+    next: Literal["researcher", "coder", "writer", "FINISH"]
+    reason: str
+
+
+def make_supervisor_node():
+    """
+    The supervisor decides:
+    - Which agent to call next
+    - When all work is done (FINISH)
+    """
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    structured_llm = llm.with_structured_output(RouterDecision)
+    
+    system = """You are a Supervisor Agent managing a team of specialists:
+- **researcher**: Searches the web and gathers information
+- **coder**: Writes and tests Python code
+- **writer**: Creates polished written content
+
+Given the task and what has been done so far, decide who should act next.
+Choose FINISH when the task is complete and all necessary work has been done.
+
+Routing guidelines:
+- If the task needs information → researcher first
+- If the task needs code → coder (after research if needed)
+- If output needs to be polished/documented → writer last
+- Simple tasks may only need one or two agents
+- FINISH when you have everything needed for a complete answer"""
+
+    def supervisor_node(state: SupervisorState) -> dict:
+        # Build context summary for supervisor
+        done = []
+        if state.get("research_output"):
+            done.append("✓ Research complete")
+        if state.get("code_output"):
+            done.append("✓ Code complete")
+        if state.get("writer_output"):
+            done.append("✓ Writing complete")
+        
+        status = ", ".join(done) if done else "Nothing done yet"
+        
+        routing_prompt = f"""Task: {state['task']}
+Status: {status}
+
+Who should act next? Choose from: researcher, coder, writer, or FINISH."""
+        
+        messages = [SystemMessage(content=system), HumanMessage(content=routing_prompt)]
+        decision = structured_llm.invoke(messages)
+        
+        print_agent_message("supervisor", f"Routing to: {decision.next} | Reason: {decision.reason}")
+        
+        return {"next_agent": decision.next}
+    
+    return supervisor_node
+
+
+def synthesize_final_answer(state: SupervisorState) -> dict:
+    """Combine all agent outputs into a final response."""
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.3, api_key=OPENAI_API_KEY)
+    
+    outputs = []
+    if state.get("research_output"):
+        outputs.append(f"Research:\n{state['research_output']}")
+    if state.get("code_output"):
+        outputs.append(f"Code:\n{state['code_output']}")
+    if state.get("writer_output"):
+        outputs.append(f"Written Content:\n{state['writer_output']}")
+    
+    # If writer already produced the final output, use it directly
+    if state.get("writer_output"):
+        return {"final_answer": state["writer_output"]}
+    
+    # Otherwise synthesize
+    combined = "\n\n---\n\n".join(outputs)
+    response = llm.invoke([
+        SystemMessage(content="Synthesize the following agent outputs into a cohesive final answer:"),
+        HumanMessage(content=combined),
+    ])
+    return {"final_answer": response.content}
+
+
+# ── 5. Build the Full Graph ───────────────────────────────────
+
+def build_supervisor_graph():
+    
+    researcher = make_researcher_agent()
+    coder = make_coder_agent()
+    writer = make_writer_agent()
+    supervisor = make_supervisor_node()
+    
+    graph = StateGraph(SupervisorState)
+    
+    # Add all nodes
+    graph.add_node("supervisor", supervisor)
+    graph.add_node("researcher", researcher)
+    graph.add_node("coder", coder)
+    graph.add_node("writer", writer)
+    graph.add_node("synthesize", synthesize_final_answer)
+    
+    # Entry: always start with supervisor
+    graph.add_edge(START, "supervisor")
+    
+    # Supervisor routes to sub-agents or synthesis
+    graph.add_conditional_edges(
+        "supervisor",
+        lambda state: state["next_agent"],
+        {
+            "researcher": "researcher",
+            "coder":      "coder",
+            "writer":     "writer",
+            "FINISH":     "synthesize",
+        }
+    )
+    
+    # After each sub-agent, return to supervisor
+    graph.add_edge("researcher", "supervisor")
+    graph.add_edge("coder",      "supervisor")
+    graph.add_edge("writer",     "supervisor")
+    
+    # Synthesis → END
+    graph.add_edge("synthesize", END)
+    
+    return graph.compile()
+
+
+# ── 6. Run Demo ───────────────────────────────────────────────
+
+def run_supervisor_demo(task: str):
+    console.print(f"\n[bold magenta]═══ 03: Supervisor Multi-Agent ═══[/bold magenta]")
+    console.print(f"\n[bold white]TASK:[/bold white] {task}\n")
+    
+    graph = build_supervisor_graph()
+    
+    initial_state = {
+        "messages": [HumanMessage(content=task)],
+        "next_agent": "",
+        "task": task,
+        "research_output": "",
+        "code_output": "",
+        "writer_output": "",
+        "final_answer": "",
+    }
+    
+    result = graph.invoke(initial_state)
+    
+    print_agent_message("supervisor", "All agents complete. Final answer:")
+    console.print(f"\n[bold green]{'='*60}[/bold green]")
+    console.print(result["final_answer"])
+    console.print(f"[bold green]{'='*60}[/bold green]")
+    
+    return result
+
+
+if __name__ == "__main__":
+    # Task 1: Needs researcher + writer
+    run_supervisor_demo(
+        "Write a brief technical overview of transformer neural networks, "
+        "including their key components and why they revolutionized NLP."
+    )
+    
+    # Task 2: Needs coder + writer
+    run_supervisor_demo(
+        "Write a Python function that implements binary search, "
+        "tests it with a sample array, and documents it with examples."
+    )
+    
+    # Task 3: Needs all three agents
+    run_supervisor_demo(
+        "Research what APIs exist for getting stock prices, "
+        "then write Python code to fetch AAPL price using the yfinance library, "
+        "and finally write a tutorial explaining how to use it."
+    )
+</file>
+
+<file path="04_plan_execute_agent.py">
+# ============================================================
+# 04_plan_execute_agent.py
+# ─────────────────────────────────────────────────────────────
+# PLAN-AND-EXECUTE PATTERN
+# Two-stage agent: first make a full plan, then execute each step.
+# Unlike ReAct (which plans one step at a time), this agent
+# creates an ENTIRE plan upfront, then executes step-by-step.
+#
+# Architecture:
+#
+#   User Input
+#       ↓
+#   [PLANNER] → generates full step-by-step plan
+#       ↓
+#   [EXECUTOR] → runs each step (with tools)
+#       ↓
+#   [REPLANNER] → adjusts plan based on results
+#       ↓
+#   [FINAL] → synthesizes all step results
+# ============================================================
+
+from config import OPENAI_API_KEY, GPT4O_MINI, console, print_step
+
+from typing import Annotated, List, Optional, Union
+from typing_extensions import TypedDict
+
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+from pydantic import BaseModel, Field
+import json
+
+
+# ── 1. State Schema ───────────────────────────────────────────
+
+class Step(BaseModel):
+    """A single step in the execution plan."""
+    step_number: int
+    description: str
+    tool_needed: Optional[str] = None  # hint for which tool to use
+    depends_on: List[int] = Field(default_factory=list)  # step dependencies
+
+
+class Plan(BaseModel):
+    """The full execution plan."""
+    goal: str
+    steps: List[Step]
+    estimated_steps: int
+
+
+class StepResult(BaseModel):
+    """Result from executing one step."""
+    step_number: int
+    description: str
+    result: str
+    success: bool
+
+
+class PlanExecuteState(TypedDict):
+    input: str                              # user's original request
+    plan: Optional[Plan]                    # the generated plan
+    current_step: int                       # which step we're on
+    step_results: List[StepResult]         # completed steps
+    messages: Annotated[list, add_messages] # message history
+    final_answer: str                       # synthesized output
+    should_replan: bool                     # flag to trigger replanning
+
+
+# ── 2. Tools ──────────────────────────────────────────────────
+
+@tool
+def execute_code(code: str) -> str:
+    """Run Python code and return output."""
+    import io, sys, math
+    old_stdout = sys.stdout
+    sys.stdout = buffer = io.StringIO()
+    try:
+        exec(code, {"__builtins__": __builtins__, "math": math, "json": json})
+        return buffer.getvalue() or "(no output)"
+    except Exception as e:
+        return f"Error: {e}"
+    finally:
+        sys.stdout = old_stdout
+
+
+@tool
+def web_search(query: str) -> str:
+    """Search the internet for information."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=3))
+        return "\n".join(f"• {r['title']}: {r['body'][:200]}" for r in results)
+    except Exception as e:
+        return f"Search unavailable: {e}. Mock: '{query}' returns relevant results about the topic."
+
+
+@tool
+def calculate(expression: str) -> str:
+    """Evaluate a math expression."""
+    import math
+    try:
+        result = eval(expression, {"__builtins__": {}}, 
+                      {k: getattr(math, k) for k in dir(math) if not k.startswith("_")})
+        return str(result)
+    except Exception as e:
+        return f"Calculation error: {e}"
+
+
+@tool
+def summarize_text(text: str, max_words: int = 100) -> str:
+    """Summarize a long piece of text into key points."""
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    # Simple extractive summary — in production use an LLM
+    sentences = text.split(". ")
+    key_sentences = sentences[:3]  # take first 3 sentences
+    return ". ".join(key_sentences) + "..."
+
+
+@tool
+def create_report(title: str, sections: str) -> str:
+    """
+    Create a formatted markdown report.
+    Args:
+        title: Report title
+        sections: JSON string with section names and content:
+                  [{"name": "Introduction", "content": "..."}]
+    """
+    try:
+        section_list = json.loads(sections)
+    except Exception:
+        section_list = [{"name": "Content", "content": sections}]
+    
+    report = f"# {title}\n\n"
+    for section in section_list:
+        report += f"## {section['name']}\n{section['content']}\n\n"
+    return report
+
+
+ALL_TOOLS = [execute_code, web_search, calculate, summarize_text, create_report]
+
+
+# ── 3. Planner Node ───────────────────────────────────────────
+
+def make_planner():
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    structured_llm = llm.with_structured_output(Plan)
+    
+    system = """You are a strategic planning agent. Given a user's goal, 
+create a detailed step-by-step execution plan.
+
+Break complex goals into concrete, actionable steps.
+Each step should be specific and executable by an AI with tools.
+
+Available tools for execution:
+- execute_code: Run Python code
+- web_search: Search the internet  
+- calculate: Do math calculations
+- summarize_text: Condense long text
+- create_report: Generate formatted reports
+
+Keep steps sequential and clear. 3-7 steps is usually ideal."""
+
+    def planner_node(state: PlanExecuteState) -> dict:
+        console.print("\n[bold magenta]📋 PLANNER: Creating execution plan...[/bold magenta]")
+        
+        messages = [
+            SystemMessage(content=system),
+            HumanMessage(content=f"Create a plan to accomplish this goal: {state['input']}")
+        ]
+        
+        plan = structured_llm.invoke(messages)
+        
+        # Display the plan
+        console.print(f"\n[bold cyan]Plan: {plan.goal}[/bold cyan]")
+        for step in plan.steps:
+            console.print(f"  Step {step.step_number}: {step.description}")
+            if step.tool_needed:
+                console.print(f"    [dim]→ Tool hint: {step.tool_needed}[/dim]")
+        
+        return {
+            "plan": plan,
+            "current_step": 1,
+            "step_results": [],
+            "should_replan": False,
+        }
+    
+    return planner_node
+
+
+# ── 4. Executor Node ──────────────────────────────────────────
+
+def make_executor():
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    llm_with_tools = llm.bind_tools(ALL_TOOLS)
+    tool_node = ToolNode(ALL_TOOLS)
+    
+    system = """You are an execution agent. You receive a specific step to execute.
+Use the appropriate tools to complete the step.
+After completing the step, provide a clear summary of what was accomplished.
+Be specific and include actual results/data in your summary."""
+
+    def executor_node(state: PlanExecuteState) -> dict:
+        plan = state["plan"]
+        current_step_num = state["current_step"]
+        
+        if current_step_num > len(plan.steps):
+            return {}
+        
+        step = plan.steps[current_step_num - 1]
+        
+        console.print(f"\n[bold yellow]⚡ EXECUTOR: Running Step {step.step_number}[/bold yellow]")
+        console.print(f"  [dim]{step.description}[/dim]")
+        
+        # Build context from previous steps
+        prev_context = ""
+        if state["step_results"]:
+            prev_context = "\n\nPrevious step results:\n"
+            for r in state["step_results"]:
+                prev_context += f"- Step {r.step_number}: {r.result[:200]}\n"
+        
+        prompt = f"""Overall goal: {state['input']}
+
+Current step {step.step_number}: {step.description}
+{f'Tool hint: Use {step.tool_needed}' if step.tool_needed else ''}
+{prev_context}
+
+Execute this step completely. Use tools as needed."""
+
+        messages = [SystemMessage(content=system), HumanMessage(content=prompt)]
+        
+        # Mini agent loop for this step
+        for _ in range(4):
+            response = llm_with_tools.invoke(messages)
+            messages.append(response)
+            
+            if not (hasattr(response, "tool_calls") and response.tool_calls):
+                break
+            
+            tool_results = tool_node.invoke({"messages": messages})
+            messages.extend(tool_results["messages"])
+        
+        result_text = messages[-1].content
+        
+        step_result = StepResult(
+            step_number=step.step_number,
+            description=step.description,
+            result=result_text,
+            success=True,
+        )
+        
+        console.print(f"  [green]✓ Step {step.step_number} complete[/green]")
+        
+        return {
+            "step_results": state["step_results"] + [step_result],
+            "current_step": current_step_num + 1,
+            "messages": [AIMessage(content=f"Step {step.step_number} result: {result_text}")],
+        }
+    
+    return executor_node
+
+
+# ── 5. Replanner Node ─────────────────────────────────────────
+
+class ReplanDecision(BaseModel):
+    """Decision: continue or replan."""
+    action: str = Field(description="Either 'continue', 'replan', or 'finish'")
+    reason: str
+    new_steps: Optional[List[str]] = Field(
+        default=None,
+        description="New steps if replanning (list of step descriptions)"
+    )
+
+
+def make_replanner():
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    structured_llm = llm.with_structured_output(ReplanDecision)
+    
+    system = """You monitor execution progress and decide whether to:
+- continue: proceed to next planned step (most common)
+- replan: generate new/adjusted steps based on what was learned
+- finish: all steps complete, synthesize final answer
+
+Replan only if results revealed the original plan is insufficient or wrong.
+Finish when all planned steps are complete."""
+
+    def replanner_node(state: PlanExecuteState) -> dict:
+        plan = state["plan"]
+        current_step = state["current_step"]
+        results = state["step_results"]
+        
+        results_summary = "\n".join(
+            f"Step {r.step_number}: {r.result[:150]}" for r in results
+        )
+        
+        messages = [
+            SystemMessage(content=system),
+            HumanMessage(content=f"""Goal: {state['input']}
+Steps planned: {len(plan.steps)}
+Steps completed: {len(results)}
+Current step number: {current_step}
+
+Completed step results:
+{results_summary}
+
+Should we continue, replan, or finish?""")
+        ]
+        
+        decision = structured_llm.invoke(messages)
+        console.print(f"\n[bold red]🧠 REPLANNER:[/bold red] {decision.action} — {decision.reason}")
+        
+        if decision.action == "replan" and decision.new_steps:
+            # Build new steps from replanner's suggestions
+            new_step_objects = [
+                Step(step_number=i+1, description=desc)
+                for i, desc in enumerate(decision.new_steps)
+            ]
+            new_plan = Plan(
+                goal=plan.goal,
+                steps=new_step_objects,
+                estimated_steps=len(new_step_objects)
+            )
+            return {"plan": new_plan, "current_step": 1, "should_replan": True}
+        
+        return {"should_replan": False}
+    
+    return replanner_node
+
+
+# ── 6. Final Synthesis Node ───────────────────────────────────
+
+def make_synthesizer():
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.3, api_key=OPENAI_API_KEY)
+    
+    def synthesize_node(state: PlanExecuteState) -> dict:
+        console.print("\n[bold green]✅ SYNTHESIZER: Creating final answer...[/bold green]")
+        
+        results_text = "\n\n".join(
+            f"**Step {r.step_number} — {r.description}:**\n{r.result}"
+            for r in state["step_results"]
+        )
+        
+        messages = [
+            SystemMessage(content="""You are a synthesis expert. Combine the results from all 
+executed steps into a comprehensive, well-organized final answer. 
+Be clear, concise, and structure the output logically."""),
+            HumanMessage(content=f"""Original request: {state['input']}
+
+Results from all steps:
+{results_text}
+
+Synthesize these into a complete final response.""")
+        ]
+        
+        response = llm.invoke(messages)
+        return {"final_answer": response.content}
+    
+    return synthesize_node
+
+
+# ── 7. Router ─────────────────────────────────────────────────
+
+def should_continue_or_finish(state: PlanExecuteState) -> str:
+    """After replanner: continue executing, or go to synthesis?"""
+    plan = state.get("plan")
+    current = state.get("current_step", 1)
+    
+    if not plan:
+        return "synthesize"
+    
+    if current > len(plan.steps):
+        return "synthesize"
+    
+    return "execute"
+
+
+# ── 8. Build the Full Graph ───────────────────────────────────
+
+def build_plan_execute_graph():
+    planner  = make_planner()
+    executor = make_executor()
+    replanner = make_replanner()
+    synthesizer = make_synthesizer()
+    
+    graph = StateGraph(PlanExecuteState)
+    
+    graph.add_node("planner",    planner)
+    graph.add_node("execute",    executor)
+    graph.add_node("replan",     replanner)
+    graph.add_node("synthesize", synthesizer)
+    
+    graph.add_edge(START, "planner")
+    graph.add_edge("planner", "execute")
+    graph.add_edge("execute", "replan")
+    
+    graph.add_conditional_edges(
+        "replan",
+        should_continue_or_finish,
+        {"execute": "execute", "synthesize": "synthesize"}
+    )
+    
+    graph.add_edge("synthesize", END)
+    
+    return graph.compile()
+
+
+# ── 9. Demo ───────────────────────────────────────────────────
+
+def run_plan_execute(task: str):
+    console.print(f"\n[bold magenta]═══ 04: Plan & Execute Agent ═══[/bold magenta]")
+    console.print(f"\n[bold white]TASK:[/bold white] {task}\n")
+    
+    graph = build_plan_execute_graph()
+    
+    initial = {
+        "input": task,
+        "plan": None,
+        "current_step": 1,
+        "step_results": [],
+        "messages": [],
+        "final_answer": "",
+        "should_replan": False,
+    }
+    
+    result = graph.invoke(initial)
+    
+    console.print(f"\n[bold green]{'='*60}[/bold green]")
+    console.print("[bold green]FINAL ANSWER:[/bold green]")
+    console.print(result["final_answer"])
+    console.print(f"[bold green]{'='*60}[/bold green]")
+    
+    return result
+
+
+if __name__ == "__main__":
+    run_plan_execute(
+        "Create a comprehensive analysis of the number 42: "
+        "compute its prime factorization, find interesting mathematical properties, "
+        "explain its cultural significance, and write a summary report."
+    )
+    
+    run_plan_execute(
+        "Build a Python script that generates 20 random numbers between 1-100, "
+        "calculates their mean and standard deviation, "
+        "finds the min and max, and formats a statistical report."
+    )
+</file>
+
+<file path="05_reflection_agent.py">
+# ============================================================
+# 05_reflection_agent.py
+# ─────────────────────────────────────────────────────────────
+# REFLECTION PATTERN — agents that critique and improve themselves.
+# The agent generates a response, then a "critic" evaluates it,
+# then the agent revises based on feedback. Loops until good enough.
+#
+# Two variants shown:
+#   A) Self-reflection (same LLM critiques itself)
+#   B) Two-agent reflection (separate generator + critic)
+#
+# Architecture:
+#   [GENERATOR] → draft
+#       ↓
+#   [CRITIC] → critique + score
+#       ↓
+#   Is score high enough? → No → [GENERATOR] (revise)
+#                        → Yes → [FINAL]
+# ============================================================
+
+from config import OPENAI_API_KEY, GPT4O_MINI, CLAUDE_HAIKU, console, print_step
+
+from typing import Annotated, Optional
+from typing_extensions import TypedDict
+
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from pydantic import BaseModel, Field
+
+
+# ── 1. State ──────────────────────────────────────────────────
+
+class ReflectionState(TypedDict):
+    task: str
+    draft: str                       # current draft
+    critique: str                    # critic's feedback
+    score: float                     # 0.0 to 1.0 quality score
+    revision_number: int             # how many revisions made
+    messages: Annotated[list, add_messages]
+    final_output: str
+
+
+# ── 2. Critique Schema ────────────────────────────────────────
+
+class Critique(BaseModel):
+    """Structured critique from the critic agent."""
+    score: float = Field(
+        ge=0.0, le=1.0,
+        description="Quality score from 0.0 (terrible) to 1.0 (perfect)"
+    )
+    strengths: list[str] = Field(description="What the draft does well")
+    weaknesses: list[str] = Field(description="What needs improvement")
+    specific_suggestions: list[str] = Field(description="Concrete changes to make")
+    is_acceptable: bool = Field(description="True if score >= 0.8 and ready to publish")
+
+
+# ── 3A. Self-Reflection Pattern ───────────────────────────────
+
+class SelfReflectionAgent:
+    """
+    A single LLM that generates, then critiques itself, then improves.
+    Simpler but may have blind spots.
+    """
+    
+    def __init__(self, max_revisions: int = 3, target_score: float = 0.85):
+        self.llm = ChatOpenAI(
+            model=GPT4O_MINI, 
+            temperature=0.7, 
+            api_key=OPENAI_API_KEY
+        )
+        self.structured_llm = self.llm.with_structured_output(Critique)
+        self.max_revisions = max_revisions
+        self.target_score = target_score
+    
+    def generate(self, task: str, critique: str = "", prev_draft: str = "") -> str:
+        """Generate or revise a response."""
+        if not prev_draft:
+            prompt = f"Task: {task}\n\nWrite a high-quality response:"
+        else:
+            prompt = f"""Task: {task}
+
+Your previous draft:
+{prev_draft}
+
+Critique received:
+{critique}
+
+Now write an improved version addressing all the feedback:"""
+        
+        response = self.llm.invoke([
+            SystemMessage(content="You are an expert writer and analyst. Produce excellent, accurate, well-structured content."),
+            HumanMessage(content=prompt),
+        ])
+        return response.content
+    
+    def critique(self, task: str, draft: str) -> Critique:
+        """Critique the draft objectively."""
+        prompt = f"""Task given: {task}
+
+Draft to evaluate:
+{draft}
+
+Evaluate this draft objectively. Be honest and specific."""
+        
+        return self.structured_llm.invoke([
+            SystemMessage(content="""You are a strict quality reviewer. 
+Your job is to find flaws and suggest specific improvements.
+Do not be lenient — a score of 0.8+ means it's genuinely publication-ready."""),
+            HumanMessage(content=prompt),
+        ])
+    
+    def run(self, task: str) -> dict:
+        """Run the full reflection loop."""
+        console.print(f"\n[bold cyan]Self-Reflection Agent[/bold cyan]")
+        console.print(f"Task: {task}\n")
+        
+        draft = ""
+        critique_text = ""
+        history = []
+        
+        for revision in range(self.max_revisions + 1):
+            # Generate
+            console.print(f"[bold yellow]📝 Generating {'initial draft' if revision == 0 else f'revision {revision}'}...[/bold yellow]")
+            draft = self.generate(task, critique_text, draft if revision > 0 else "")
+            
+            history.append({
+                "revision": revision,
+                "draft": draft[:200] + "...",
+            })
+            
+            # Critique
+            console.print(f"[bold red]🔍 Critiquing...[/bold red]")
+            critique = self.critique(task, draft)
+            critique_text = "\n".join([
+                f"Score: {critique.score:.2f}",
+                f"Weaknesses: {', '.join(critique.weaknesses)}",
+                f"Suggestions: {', '.join(critique.specific_suggestions)}",
+            ])
+            
+            console.print(f"  Score: {critique.score:.2f} | Acceptable: {critique.is_acceptable}")
+            console.print(f"  Strengths: {', '.join(critique.strengths[:2])}")
+            console.print(f"  Weaknesses: {', '.join(critique.weaknesses[:2])}")
+            
+            if critique.is_acceptable or revision >= self.max_revisions:
+                console.print(f"\n[bold green]✅ Done after {revision} revision(s). Score: {critique.score:.2f}[/bold green]")
+                break
+        
+        return {"task": task, "final_draft": draft, "final_score": critique.score, "history": history}
+
+
+# ── 3B. Two-Agent Reflection (Generator + Critic) ─────────────
+
+def build_two_agent_reflection_graph(max_revisions: int = 3, target_score: float = 0.82):
+    """
+    Separate generator and critic agents in a LangGraph loop.
+    The critic can be a different model (e.g., Claude critiques GPT output).
+    """
+    
+    # Different models for generator and critic (interesting!)
+    generator_llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.7, api_key=OPENAI_API_KEY)
+    critic_llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.1, api_key=OPENAI_API_KEY)
+    # For real diversity: critic_llm = ChatAnthropic(model=CLAUDE_HAIKU, api_key=ANTHROPIC_API_KEY)
+    
+    structured_critic = critic_llm.with_structured_output(Critique)
+    
+    # ── Generator Node ────────────────────────────────────────
+    def generator_node(state: ReflectionState) -> dict:
+        revision = state.get("revision_number", 0)
+        
+        if revision == 0:
+            # Initial generation
+            prompt = f"""Create a high-quality response to the following task.
+Be thorough, accurate, well-structured, and engaging.
+
+Task: {state['task']}"""
+        else:
+            # Revision based on critique
+            prompt = f"""Improve your previous draft based on the critique.
+Address every weakness and suggestion specifically.
+
+Task: {state['task']}
+
+Previous draft:
+{state['draft']}
+
+Critique and feedback:
+{state['critique']}
+Score was: {state['score']:.2f}/1.0
+
+Write an improved version that addresses all feedback:"""
+        
+        console.print(f"\n[bold yellow]📝 GENERATOR: {'Writing initial draft' if revision == 0 else f'Writing revision {revision}'}...[/bold yellow]")
+        
+        response = generator_llm.invoke([
+            SystemMessage(content="""You are an expert content creator. 
+Write clear, accurate, well-structured, and engaging responses.
+When revising, explicitly address each piece of feedback."""),
+            HumanMessage(content=prompt),
+        ])
+        
+        return {
+            "draft": response.content,
+            "messages": [AIMessage(content=f"[GENERATOR v{revision}]: {response.content[:100]}...")],
+        }
+    
+    # ── Critic Node ───────────────────────────────────────────
+    def critic_node(state: ReflectionState) -> dict:
+        console.print(f"[bold red]🔍 CRITIC: Evaluating draft...[/bold red]")
+        
+        critique = structured_critic.invoke([
+            SystemMessage(content="""You are a demanding quality critic.
+Evaluate the draft against the task requirements.
+Be specific, fair, and constructive.
+Score 0.8+ only for genuinely excellent work."""),
+            HumanMessage(content=f"""Task: {state['task']}
+
+Draft to evaluate:
+{state['draft']}
+
+Provide detailed critique:"""),
+        ])
+        
+        critique_text = "\n".join([
+            f"SCORE: {critique.score:.2f}",
+            "",
+            "✅ STRENGTHS:",
+            *[f"  • {s}" for s in critique.strengths],
+            "",
+            "❌ WEAKNESSES:",
+            *[f"  • {w}" for w in critique.weaknesses],
+            "",
+            "💡 SUGGESTIONS:",
+            *[f"  • {s}" for s in critique.specific_suggestions],
+        ])
+        
+        console.print(f"  [{'green' if critique.is_acceptable else 'red'}]Score: {critique.score:.2f} | Acceptable: {critique.is_acceptable}[/{'green' if critique.is_acceptable else 'red'}]")
+        
+        return {
+            "critique": critique_text,
+            "score": critique.score,
+            "revision_number": state.get("revision_number", 0) + 1,
+            "messages": [HumanMessage(content=f"[CRITIC]: Score {critique.score:.2f}. {critique_text[:100]}...")],
+        }
+    
+    # ── Finalizer Node ────────────────────────────────────────
+    def finalize_node(state: ReflectionState) -> dict:
+        console.print(f"\n[bold green]✅ FINAL: Polishing output...[/bold green]")
+        
+        response = generator_llm.invoke([
+            SystemMessage(content="Polish this response for final publication. Fix any remaining issues. Keep what works well."),
+            HumanMessage(content=f"Final polish of:\n\n{state['draft']}"),
+        ])
+        
+        return {"final_output": response.content}
+    
+    # ── Router ────────────────────────────────────────────────
+    def should_revise(state: ReflectionState) -> str:
+        score = state.get("score", 0.0)
+        revision = state.get("revision_number", 0)
+        
+        if score >= target_score:
+            console.print(f"  [green]→ Score {score:.2f} ≥ {target_score} — Finalizing![/green]")
+            return "finalize"
+        
+        if revision >= max_revisions:
+            console.print(f"  [yellow]→ Max revisions ({max_revisions}) reached — Finalizing![/yellow]")
+            return "finalize"
+        
+        console.print(f"  [yellow]→ Score {score:.2f} < {target_score} — Revising...[/yellow]")
+        return "generate"
+    
+    # ── Build Graph ───────────────────────────────────────────
+    graph = StateGraph(ReflectionState)
+    
+    graph.add_node("generate",  generator_node)
+    graph.add_node("critique",  critic_node)
+    graph.add_node("finalize",  finalize_node)
+    
+    graph.add_edge(START, "generate")
+    graph.add_edge("generate", "critique")
+    
+    graph.add_conditional_edges(
+        "critique",
+        should_revise,
+        {"generate": "generate", "finalize": "finalize"}
+    )
+    
+    graph.add_edge("finalize", END)
+    
+    return graph.compile()
+
+
+# ── 4. Constitutional AI Pattern ──────────────────────────────
+# The AI critiques its output against a set of "constitutional" principles
+
+class ConstitutionalAgent:
+    """
+    Inspired by Anthropic's Constitutional AI approach.
+    The agent revises its output to comply with a set of principles.
+    """
+    
+    CONSTITUTION = [
+        "The response must be factually accurate and not contain hallucinations.",
+        "The response must be helpful and directly address the user's question.",
+        "The response must be safe and not encourage harmful behavior.",
+        "The response must be honest and acknowledge uncertainty where it exists.",
+        "The response must be concise — no unnecessary padding or repetition.",
+    ]
+    
+    def __init__(self):
+        self.llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.3, api_key=OPENAI_API_KEY)
+    
+    def generate_initial(self, task: str) -> str:
+        response = self.llm.invoke([HumanMessage(content=task)])
+        return response.content
+    
+    def check_principle(self, response: str, principle: str, task: str) -> tuple[bool, str]:
+        """Check if response violates a principle and suggest fix."""
+        check_prompt = f"""Principle: {principle}
+
+Task: {task}
+Response to check: {response}
+
+Does this response violate the principle?
+Answer with:
+VIOLATES: [yes/no]
+REASONING: [brief explanation]
+FIX: [how to fix it, or "No fix needed"]"""
+        
+        result = self.llm.invoke([HumanMessage(content=check_prompt)])
+        text = result.content
+        
+        violates = "VIOLATES: yes" in text.lower()
+        fix_line = [l for l in text.split("\n") if l.startswith("FIX:")]
+        fix = fix_line[0].replace("FIX:", "").strip() if fix_line else ""
+        
+        return violates, fix
+    
+    def revise_against_principle(self, response: str, principle: str, fix: str, task: str) -> str:
+        """Revise the response to comply with the principle."""
+        revise_prompt = f"""Original task: {task}
+
+Current response: {response}
+
+This response violates the principle: "{principle}"
+Suggested fix: {fix}
+
+Rewrite the response to comply with the principle while keeping everything else good:"""
+        
+        result = self.llm.invoke([HumanMessage(content=revise_prompt)])
+        return result.content
+    
+    def run(self, task: str) -> str:
+        """Run constitutional AI loop."""
+        console.print(f"\n[bold cyan]Constitutional AI Agent[/bold cyan]")
+        console.print(f"Task: {task}\n")
+        
+        response = self.generate_initial(task)
+        console.print(f"[dim]Initial response generated[/dim]")
+        
+        for i, principle in enumerate(self.CONSTITUTION, 1):
+            console.print(f"[bold blue]Checking principle {i}:[/bold blue] {principle[:60]}...")
+            
+            violates, fix = self.check_principle(response, principle, task)
+            
+            if violates and fix and fix != "No fix needed":
+                console.print(f"  [red]⚠ Violation found. Revising...[/red]")
+                response = self.revise_against_principle(response, principle, fix, task)
+                console.print(f"  [green]✓ Revised[/green]")
+            else:
+                console.print(f"  [green]✓ Compliant[/green]")
+        
+        return response
+
+
+# ── 5. Main Demo ──────────────────────────────────────────────
+
+if __name__ == "__main__":
+    console.print("[bold magenta]═══ 05: Reflection Agents ═══[/bold magenta]")
+    
+    task = "Explain quantum entanglement to a 10-year-old, then to a physics PhD student."
+    
+    # Demo 1: Self-reflection
+    agent_a = SelfReflectionAgent(max_revisions=2, target_score=0.80)
+    result_a = agent_a.run(task)
+    print_step("Self-Reflection Final Output", result_a["final_draft"][:500] + "...")
+    
+    # Demo 2: Two-agent reflection graph
+    console.print("\n\n[bold cyan]Two-Agent Reflection:[/bold cyan]")
+    graph = build_two_agent_reflection_graph(max_revisions=2)
+    
+    initial_state: ReflectionState = {
+        "task": task,
+        "draft": "",
+        "critique": "",
+        "score": 0.0,
+        "revision_number": 0,
+        "messages": [],
+        "final_output": "",
+    }
+    
+    result = graph.invoke(initial_state)
+    print_step("Two-Agent Reflection Final Output", result["final_output"][:500] + "...")
+    
+    # Demo 3: Constitutional AI
+    console.print("\n\n[bold cyan]Constitutional AI:[/bold cyan]")
+    agent_c = ConstitutionalAgent()
+    constitutional_result = agent_c.run(
+        "What's the fastest way to lose 20 pounds? Give specific advice."
+    )
+    print_step("Constitutional Output", constitutional_result[:500] + "...")
+</file>
+
+<file path="06_multi_agent_network.py">
+# ============================================================
+# 06_multi_agent_network.py
+# ─────────────────────────────────────────────────────────────
+# MULTI-AGENT NETWORK — "Open Claw" / fully connected architecture.
+# Agents run in PARALLEL branches and share a global state.
+# Results are merged and synthesized.
+#
+# Architecture:
+#
+#   ┌─────────────┐
+#   │  DISPATCHER │  ← analyzes task, decides parallel branches
+#   └──────┬──────┘
+#     ┌────┼────┐────────┐
+#  ┌──▼─┐ ┌▼──┐ ┌▼──┐  ┌▼──┐
+#  │ A  │ │ B │ │ C │  │ D │  ← agents run simultaneously
+#  └──┬─┘ └┬──┘ └┬──┘  └┬──┘
+#     └────┴────┴────────┘
+#          ↓
+#    ┌───────────┐
+#    │ AGGREGATOR│  ← merges all parallel outputs
+#    └─────┬─────┘
+#          ↓
+#      FINAL OUTPUT
+# ============================================================
+
+import asyncio
+from config import OPENAI_API_KEY, GPT4O_MINI, console, print_step
+
+from typing import Annotated, Dict, List, Optional, Any
+from typing_extensions import TypedDict
+import operator
+
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+from pydantic import BaseModel, Field
+import json, time
+
+
+# ── 1. State with parallel branches ───────────────────────────
+# `operator.add` as reducer means lists are CONCATENATED (not replaced)
+
+class NetworkState(TypedDict):
+    task: str
+    branch_tasks: Dict[str, str]               # branch_name → sub-task
+    branch_outputs: Annotated[Dict[str, str], lambda a, b: {**a, **b}]  # merge dicts
+    active_branches: List[str]
+    messages: Annotated[list, add_messages]
+    synthesis: str
+    metadata: Dict[str, Any]
+
+
+# ── 2. Agent factory (creates any specialist agent) ───────────
+
+def create_specialist(
+    name: str,
+    system_prompt: str,
+    tools: list = None,
+    temperature: float = 0.3,
+) -> callable:
+    """Factory: create any specialist agent node."""
+    
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=temperature, api_key=OPENAI_API_KEY)
+    
+    if tools:
+        llm_with_tools = llm.bind_tools(tools)
+        tool_node = ToolNode(tools)
+    else:
+        llm_with_tools = llm
+        tool_node = None
+    
+    def agent_fn(state: NetworkState) -> dict:
+        # Get this agent's specific sub-task
+        sub_task = state["branch_tasks"].get(name, state["task"])
+        
+        start_time = time.time()
+        console.print(f"  [bold]🤖 {name.upper()}[/bold] starting...")
+        
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Your task: {sub_task}\n\nOverall context: {state['task']}")
+        ]
+        
+        if tool_node:
+            # Agent with tools — run mini loop
+            for _ in range(5):
+                response = llm_with_tools.invoke(messages)
+                messages.append(response)
+                
+                if not (hasattr(response, "tool_calls") and response.tool_calls):
+                    break
+                
+                tool_results = tool_node.invoke({"messages": messages})
+                messages.extend(tool_results["messages"])
+            
+            output = messages[-1].content
+        else:
+            response = llm.invoke(messages)
+            output = response.content
+        
+        elapsed = time.time() - start_time
+        console.print(f"  [green]✓ {name.upper()}[/green] completed in {elapsed:.1f}s")
+        
+        return {
+            "branch_outputs": {name: output},
+            "messages": [AIMessage(content=f"[{name.upper()}]: {output[:80]}...")],
+        }
+    
+    agent_fn.__name__ = name
+    return agent_fn
+
+
+# ── 3. Tools for specialists ──────────────────────────────────
+
+@tool
+def search(query: str) -> str:
+    """Search for information."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=3))
+        return "\n".join(f"{r['title']}: {r['body'][:150]}" for r in results)
+    except:
+        return f"Mock search result for: {query}"
+
+
+@tool
+def run_code(code: str) -> str:
+    """Execute Python code."""
+    import io, sys
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    try:
+        exec(code, {"__builtins__": __builtins__})
+        return buf.getvalue() or "OK"
+    except Exception as e:
+        return f"Error: {e}"
+    finally:
+        sys.stdout = old_stdout
+
+
+@tool
+def analyze_data(data: str) -> str:
+    """Analyze structured data (JSON or CSV-like)."""
+    import statistics
+    try:
+        # Try to parse as JSON
+        parsed = json.loads(data)
+        if isinstance(parsed, list) and all(isinstance(x, (int, float)) for x in parsed):
+            return json.dumps({
+                "count": len(parsed),
+                "mean": statistics.mean(parsed),
+                "median": statistics.median(parsed),
+                "stdev": statistics.stdev(parsed) if len(parsed) > 1 else 0,
+                "min": min(parsed),
+                "max": max(parsed),
+            }, indent=2)
+        return f"Data structure: {type(parsed).__name__} with {len(parsed)} items"
+    except Exception as e:
+        return f"Analysis: {data[:200]}"
+
+
+# ── 4. Build the Parallel Network Graph ───────────────────────
+
+class BranchPlan(BaseModel):
+    """How to decompose the task across parallel branches."""
+    research_task: str = Field(description="Task for the research agent")
+    analysis_task: str = Field(description="Task for the data analysis agent")
+    creative_task: str = Field(description="Task for the creative writing agent")
+    code_task: str = Field(description="Task for the coding agent")
+    critique_task: str = Field(description="Task for the critical thinking agent")
+
+
+def build_network_graph():
+    
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    
+    # ── Dispatcher: decomposes task into parallel branches ────
+    def dispatcher_node(state: NetworkState) -> dict:
+        console.print(f"\n[bold magenta]📡 DISPATCHER: Decomposing task into branches...[/bold magenta]")
+        
+        structured_llm = llm.with_structured_output(BranchPlan)
+        
+        plan = structured_llm.invoke([
+            SystemMessage(content="""Decompose the user's task into specialized sub-tasks 
+for different expert agents to work on in PARALLEL.
+Each agent should have a distinct, complementary role.
+Make each sub-task specific and actionable."""),
+            HumanMessage(content=f"Decompose this task: {state['task']}"),
+        ])
+        
+        branch_tasks = {
+            "researcher":  plan.research_task,
+            "analyst":     plan.analysis_task,
+            "creative":    plan.creative_task,
+            "coder":       plan.code_task,
+            "critic":      plan.critique_task,
+        }
+        
+        console.print(f"  [dim]Branches: {list(branch_tasks.keys())}[/dim]")
+        for branch, task in branch_tasks.items():
+            console.print(f"  [cyan]{branch}[/cyan]: {task[:80]}...")
+        
+        return {
+            "branch_tasks": branch_tasks,
+            "active_branches": list(branch_tasks.keys()),
+        }
+    
+    # ── Create specialist agents ──────────────────────────────
+    researcher = create_specialist(
+        "researcher",
+        """You are a research expert. Find and synthesize information from multiple angles.
+Focus on facts, evidence, and authoritative sources.
+Structure your findings clearly with key insights.""",
+        tools=[search],
+        temperature=0.1,
+    )
+    
+    analyst = create_specialist(
+        "analyst",
+        """You are a data and systems analyst. 
+Examine patterns, structures, implications, and tradeoffs.
+Think quantitatively when possible. Use numbers and metrics.""",
+        tools=[analyze_data, run_code],
+        temperature=0.1,
+    )
+    
+    creative = create_specialist(
+        "creative",
+        """You are a creative director. Generate novel ideas, metaphors, frameworks,
+and unexpected connections. Think divergently and imaginatively.
+Produce content that is memorable and engaging.""",
+        temperature=0.9,  # high temp for creativity
+    )
+    
+    coder = create_specialist(
+        "coder",
+        """You are a software engineer. Write working, clean, well-documented code.
+Solve problems with elegant implementations.
+Test and explain your code clearly.""",
+        tools=[run_code],
+        temperature=0.0,
+    )
+    
+    critic = create_specialist(
+        "critic",
+        """You are a critical thinking expert. Identify flaws, risks, edge cases,
+and weaknesses in ideas and approaches.
+Provide balanced critique with constructive alternatives.""",
+        temperature=0.2,
+    )
+    
+    # ── Aggregator: merges all parallel outputs ───────────────
+    def aggregator_node(state: NetworkState) -> dict:
+        console.print(f"\n[bold blue]🔀 AGGREGATOR: Merging {len(state['branch_outputs'])} branch outputs...[/bold blue]")
+        
+        # Build a structured summary of all outputs
+        outputs_text = ""
+        for branch_name, output in state["branch_outputs"].items():
+            outputs_text += f"\n\n### {branch_name.upper()}\n{output}"
+        
+        aggregator_prompt = f"""You've received outputs from multiple specialist agents.
+Original task: {state['task']}
+
+Agent outputs:
+{outputs_text}
+
+Create a comprehensive, unified synthesis that:
+1. Integrates insights from all agents
+2. Resolves any contradictions
+3. Highlights the most important findings
+4. Provides a clear, actionable final answer
+
+Format with clear sections."""
+        
+        response = llm.invoke([
+            SystemMessage(content="You are an expert synthesizer. Create a masterful integration of multiple expert perspectives."),
+            HumanMessage(content=aggregator_prompt),
+        ])
+        
+        return {
+            "synthesis": response.content,
+            "messages": [AIMessage(content=f"[AGGREGATOR]: Synthesis complete")],
+        }
+    
+    # ── Build the graph ───────────────────────────────────────
+    graph = StateGraph(NetworkState)
+    
+    # Add all nodes
+    graph.add_node("dispatcher", dispatcher_node)
+    graph.add_node("researcher", researcher)
+    graph.add_node("analyst",    analyst)
+    graph.add_node("creative",   creative)
+    graph.add_node("coder",      coder)
+    graph.add_node("critic",     critic)
+    graph.add_node("aggregator", aggregator_node)
+    
+    # Dispatcher → all parallel agents simultaneously
+    graph.add_edge(START, "dispatcher")
+    graph.add_edge("dispatcher", "researcher")
+    graph.add_edge("dispatcher", "analyst")
+    graph.add_edge("dispatcher", "creative")
+    graph.add_edge("dispatcher", "coder")
+    graph.add_edge("dispatcher", "critic")
+    
+    # All agents → aggregator
+    graph.add_edge("researcher", "aggregator")
+    graph.add_edge("analyst",    "aggregator")
+    graph.add_edge("creative",   "aggregator")
+    graph.add_edge("coder",      "aggregator")
+    graph.add_edge("critic",     "aggregator")
+    
+    graph.add_edge("aggregator", END)
+    
+    return graph.compile()
+
+
+# ── 5. Async Parallel Execution ───────────────────────────────
+# For true parallelism, run branches as async coroutines
+
+async def run_parallel_agents(tasks: Dict[str, str]) -> Dict[str, str]:
+    """Run multiple agent tasks in true async parallel."""
+    
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.3, api_key=OPENAI_API_KEY)
+    
+    async def run_single_agent(name: str, task: str) -> tuple[str, str]:
+        response = await llm.ainvoke([
+            SystemMessage(content=f"You are the {name} specialist agent."),
+            HumanMessage(content=task),
+        ])
+        return name, response.content
+    
+    # Launch all tasks concurrently
+    coroutines = [run_single_agent(name, task) for name, task in tasks.items()]
+    results = await asyncio.gather(*coroutines)
+    
+    return dict(results)
+
+
+# ── 6. Agent Communication Protocol ──────────────────────────
+# Agents can send messages to each other (blackboard pattern)
+
+class AgentMessage(BaseModel):
+    """A message between agents."""
+    from_agent: str
+    to_agent: str          # "all" for broadcast
+    message_type: str      # "result", "question", "clarification", "alert"
+    content: str
+    priority: int = 1      # 1=low, 5=critical
+
+
+class BlackboardNetwork:
+    """
+    Agents share a common 'blackboard' (shared memory).
+    Any agent can read/write to the blackboard.
+    This enables emergent collaboration.
+    """
+    
+    def __init__(self):
+        self.blackboard: Dict[str, Any] = {}
+        self.messages: List[AgentMessage] = []
+        self.llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.2, api_key=OPENAI_API_KEY)
+    
+    def post_result(self, agent: str, key: str, value: Any):
+        """An agent posts a result to the shared blackboard."""
+        self.blackboard[f"{agent}:{key}"] = value
+        console.print(f"  [dim]{agent} → blackboard[{key}][/dim]")
+    
+    def read_all(self) -> str:
+        """Read all blackboard entries as context."""
+        if not self.blackboard:
+            return "Blackboard is empty."
+        return "\n".join(f"{k}: {str(v)[:200]}" for k, v in self.blackboard.items())
+    
+    def send_message(self, msg: AgentMessage):
+        """Send a message to another agent."""
+        self.messages.append(msg)
+        console.print(f"  [dim]{msg.from_agent} → {msg.to_agent}: [{msg.message_type}][/dim]")
+    
+    def get_messages_for(self, agent: str) -> List[AgentMessage]:
+        """Get all messages addressed to a specific agent."""
+        return [m for m in self.messages if m.to_agent in (agent, "all")]
+    
+    def run_collaborative_task(self, task: str) -> str:
+        """Run a task with blackboard-based agent collaboration."""
+        console.print(f"\n[bold cyan]Blackboard Network:[/bold cyan]")
+        console.print(f"Task: {task}\n")
+        
+        agents = ["researcher", "analyst", "synthesizer"]
+        
+        for agent in agents:
+            # Read current blackboard
+            context = self.read_all()
+            
+            # Get messages directed to this agent
+            my_messages = self.get_messages_for(agent)
+            message_context = "\n".join(f"From {m.from_agent}: {m.content}" for m in my_messages)
+            
+            prompt = f"""You are the {agent} agent in a collaborative network.
+
+Task: {task}
+
+Current shared knowledge (blackboard):
+{context if context != "Blackboard is empty." else "Nothing yet — you're going first."}
+
+{"Messages for you:" + message_context if message_context else ""}
+
+Do your part of the work. Post your key findings and any questions for other agents."""
+            
+            response = self.llm.invoke([HumanMessage(content=prompt)])
+            
+            # Post results back to blackboard
+            self.post_result(agent, "analysis", response.content[:500])
+            
+            console.print(f"  [bold]{agent.upper()}[/bold]: {response.content[:100]}...")
+        
+        # Final synthesis using all blackboard content
+        final = self.llm.invoke([
+            SystemMessage(content="Synthesize all collaborative work into a final answer."),
+            HumanMessage(content=f"Task: {task}\n\nAll agent outputs:\n{self.read_all()}"),
+        ])
+        
+        return final.content
+
+
+# ── 7. Main Demo ──────────────────────────────────────────────
+
+def run_network_demo(task: str):
+    console.print(f"\n[bold magenta]═══ 06: Multi-Agent Network ═══[/bold magenta]")
+    console.print(f"\n[bold white]TASK:[/bold white] {task}\n")
+    
+    start = time.time()
+    graph = build_network_graph()
+    
+    initial = {
+        "task": task,
+        "branch_tasks": {},
+        "branch_outputs": {},
+        "active_branches": [],
+        "messages": [HumanMessage(content=task)],
+        "synthesis": "",
+        "metadata": {},
+    }
+    
+    result = graph.invoke(initial)
+    elapsed = time.time() - start
+    
+    print_step(
+        f"Network Output ({elapsed:.1f}s, {len(result['branch_outputs'])} agents)",
+        result["synthesis"][:1000] + "..."
+    )
+    
+    return result
+
+
+if __name__ == "__main__":
+    # Demo 1: Full parallel network
+    run_network_demo(
+        "Design and analyze a system for a social media platform that uses AI "
+        "to recommend content, detect misinformation, and personalize feeds."
+    )
+    
+    # Demo 2: Async parallel (run multiple tasks truly in parallel)
+    async def async_demo():
+        tasks = {
+            "economist":   "What are the pros and cons of a 4-day work week economically?",
+            "psychologist": "How does a 4-day work week affect mental health and productivity?",
+            "manager":     "What operational challenges does a 4-day work week create?",
+        }
+        console.print("\n[bold cyan]Async Parallel Demo:[/bold cyan]")
+        results = await run_parallel_agents(tasks)
+        for agent, result in results.items():
+            console.print(f"\n[bold]{agent.upper()}:[/bold] {result[:200]}...")
+    
+    asyncio.run(async_demo())
+    
+    # Demo 3: Blackboard network
+    blackboard = BlackboardNetwork()
+    result = blackboard.run_collaborative_task(
+        "Evaluate whether Python or Rust is better for building high-performance web APIs."
+    )
+    print_step("Blackboard Network Output", result[:800])
+</file>
+
+<file path="07_hierarchical_agents.py">
+# ============================================================
+# 07_hierarchical_agents.py
+# ─────────────────────────────────────────────────────────────
+# HIERARCHICAL MULTI-AGENT SYSTEM
+# Manager agents delegate to worker agents who may delegate further.
+# This mirrors how organizations work (CEO → VP → Manager → Worker).
+#
+# Architecture (3 levels):
+#
+# Level 1 (Strategic):    CEO_AGENT
+#                          /       \
+# Level 2 (Tactical):  TECH_DEPT  BIZ_DEPT
+#                        / \          / \
+# Level 3 (Operational): Dev QA    Sales Mkt  ← leaf workers
+#
+# Each level can:
+# - Do work directly (leaf agents)
+# - Delegate to subordinates
+# - Aggregate sub-results and report up
+# ============================================================
+
+from config import OPENAI_API_KEY, GPT4O_MINI, console
+
+from typing import Annotated, Dict, List, Optional, Any, Tuple
+from typing_extensions import TypedDict
+
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from pydantic import BaseModel, Field
+import json
+
+
+# ── 1. Core Message Types ─────────────────────────────────────
+
+class Task(BaseModel):
+    """A task assigned by a manager to a worker."""
+    task_id: str
+    description: str
+    assigned_to: str
+    priority: int = 1
+    context: str = ""
+
+
+class TaskResult(BaseModel):
+    """A result returned by a worker to its manager."""
+    task_id: str
+    agent: str
+    result: str
+    success: bool
+    sub_results: List["TaskResult"] = Field(default_factory=list)
+
+
+TaskResult.model_rebuild()
+
+
+# ── 2. Generic Agent Base Class ───────────────────────────────
+
+class HierarchicalAgent:
+    """
+    Base class for hierarchical agents.
+    Can both receive tasks and delegate to subordinates.
+    """
+    
+    def __init__(
+        self,
+        name: str,
+        role: str,
+        subordinates: Dict[str, "HierarchicalAgent"] = None,
+        tools: list = None,
+        temperature: float = 0.2,
+    ):
+        self.name = name
+        self.role = role
+        self.subordinates = subordinates or {}
+        self.tools = tools or []
+        self.llm = ChatOpenAI(
+            model=GPT4O_MINI, 
+            temperature=temperature, 
+            api_key=OPENAI_API_KEY
+        )
+        self.work_log: List[str] = []
+    
+    def log(self, message: str):
+        indent = "  " * self._get_level()
+        console.print(f"{indent}[bold]🔷 {self.name.upper()}[/bold] {message}")
+        self.work_log.append(message)
+    
+    def _get_level(self) -> int:
+        """Rough level indicator based on name length."""
+        return 0  # Override in subclasses
+    
+    def should_delegate(self, task: str) -> Optional[str]:
+        """
+        Decide if this task should be delegated.
+        Returns subordinate name or None (do it myself).
+        """
+        if not self.subordinates:
+            return None
+        
+        sub_names = list(self.subordinates.keys())
+        response = self.llm.invoke([
+            SystemMessage(content=f"""You are {self.name} ({self.role}).
+Your subordinates are: {', '.join(sub_names)}.
+Decide if you should delegate this task and to whom.
+Reply with exactly: DELEGATE:<subordinate_name> or SELF"""),
+            HumanMessage(content=f"Task: {task}"),
+        ])
+        
+        text = response.content.strip()
+        if text.startswith("DELEGATE:"):
+            delegatee = text.split(":", 1)[1].strip()
+            if delegatee in self.subordinates:
+                return delegatee
+        return None
+    
+    def do_work(self, task: str, context: str = "") -> str:
+        """Execute the task directly (leaf node behavior)."""
+        messages = [
+            SystemMessage(content=f"""You are {self.name}, a {self.role}.
+Do excellent work on the assigned task.
+Be specific, thorough, and professional.
+Context about the broader goal: {context}"""),
+            HumanMessage(content=task),
+        ]
+        
+        if self.tools:
+            llm_with_tools = self.llm.bind_tools(self.tools)
+            from langgraph.prebuilt import ToolNode
+            tool_node = ToolNode(self.tools)
+            
+            for _ in range(4):
+                response = llm_with_tools.invoke(messages)
+                messages.append(response)
+                if not (hasattr(response, "tool_calls") and response.tool_calls):
+                    break
+                results = tool_node.invoke({"messages": messages})
+                messages.extend(results["messages"])
+            return messages[-1].content
+        else:
+            response = self.llm.invoke(messages)
+            return response.content
+    
+    def execute(self, task: str, context: str = "") -> TaskResult:
+        """
+        Main entry point: decide to delegate or do directly.
+        Aggregates sub-results if delegating.
+        """
+        self.log(f"Received task: {task[:80]}...")
+        
+        delegatee_name = self.should_delegate(task)
+        
+        if delegatee_name and delegatee_name in self.subordinates:
+            # Delegate to subordinate
+            self.log(f"Delegating to {delegatee_name}...")
+            subordinate = self.subordinates[delegatee_name]
+            sub_result = subordinate.execute(task, context or task)
+            
+            # Aggregate/synthesize the sub-result
+            synthesis = self.llm.invoke([
+                SystemMessage(content=f"You are {self.name}. Synthesize your subordinate's work into your report."),
+                HumanMessage(content=f"Task: {task}\n\nSubordinate {delegatee_name}'s work:\n{sub_result.result}"),
+            ])
+            
+            return TaskResult(
+                task_id=f"{self.name}-delegated",
+                agent=self.name,
+                result=synthesis.content,
+                success=True,
+                sub_results=[sub_result],
+            )
+        else:
+            # Do the work directly
+            result = self.do_work(task, context)
+            self.log(f"Completed: {result[:60]}...")
+            return TaskResult(
+                task_id=f"{self.name}-direct",
+                agent=self.name,
+                result=result,
+                success=True,
+            )
+
+
+# ── 3. Specialized Agent Types ────────────────────────────────
+
+@tool
+def write_code(specification: str) -> str:
+    """Write code based on a specification."""
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    response = llm.invoke([
+        SystemMessage(content="Write clean, documented code. Include examples."),
+        HumanMessage(content=specification),
+    ])
+    return response.content
+
+
+@tool
+def run_tests(code: str) -> str:
+    """Run tests on provided code."""
+    import io, sys
+    # Try to run it
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    try:
+        exec(code, {"__builtins__": __builtins__})
+        output = buf.getvalue()
+        return f"Tests passed. Output:\n{output}" if output else "Code executed without errors."
+    except Exception as e:
+        return f"Test failed: {type(e).__name__}: {e}"
+    finally:
+        sys.stdout = old_stdout
+
+
+@tool
+def research_topic(topic: str) -> str:
+    """Research a topic and return findings."""
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.1, api_key=OPENAI_API_KEY)
+    response = llm.invoke([
+        SystemMessage(content="Provide accurate, detailed research on the topic."),
+        HumanMessage(content=f"Research this topic thoroughly: {topic}"),
+    ])
+    return response.content
+
+
+@tool
+def create_marketing_copy(product: str, audience: str) -> str:
+    """Create marketing copy for a product."""
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.8, api_key=OPENAI_API_KEY)
+    response = llm.invoke([
+        HumanMessage(content=f"Write compelling marketing copy for: {product}\nTarget audience: {audience}"),
+    ])
+    return response.content
+
+
+# ── 4. Build the Hierarchy ────────────────────────────────────
+
+def build_company_hierarchy():
+    """
+    Build a 3-level company hierarchy:
+    
+    CEO
+    ├── CTO (Tech VP)
+    │   ├── Backend Dev
+    │   ├── Frontend Dev
+    │   └── QA Engineer
+    └── CMO (Marketing VP)
+        ├── Content Writer
+        └── Data Analyst
+    """
+    
+    # ── Level 3: Leaf Workers (no subordinates) ───────────────
+    backend_dev = HierarchicalAgent(
+        name="backend_dev",
+        role="Senior Backend Engineer",
+        tools=[write_code, run_tests],
+        temperature=0.0,
+    )
+    
+    frontend_dev = HierarchicalAgent(
+        name="frontend_dev",
+        role="Senior Frontend Engineer",
+        tools=[write_code, run_tests],
+        temperature=0.0,
+    )
+    
+    qa_engineer = HierarchicalAgent(
+        name="qa_engineer",
+        role="QA Engineer",
+        tools=[run_tests],
+        temperature=0.1,
+    )
+    
+    content_writer = HierarchicalAgent(
+        name="content_writer",
+        role="Content Writer and Copywriter",
+        tools=[create_marketing_copy],
+        temperature=0.7,
+    )
+    
+    data_analyst = HierarchicalAgent(
+        name="data_analyst",
+        role="Data Analyst",
+        tools=[research_topic],
+        temperature=0.1,
+    )
+    
+    # ── Level 2: Department Heads ─────────────────────────────
+    cto = HierarchicalAgent(
+        name="cto",
+        role="Chief Technology Officer — oversees all technical work",
+        subordinates={
+            "backend_dev":  backend_dev,
+            "frontend_dev": frontend_dev,
+            "qa_engineer":  qa_engineer,
+        },
+        temperature=0.2,
+    )
+    
+    cmo = HierarchicalAgent(
+        name="cmo",
+        role="Chief Marketing Officer — oversees all marketing and content",
+        subordinates={
+            "content_writer": content_writer,
+            "data_analyst":   data_analyst,
+        },
+        temperature=0.3,
+    )
+    
+    # ── Level 1: CEO ──────────────────────────────────────────
+    ceo = HierarchicalAgent(
+        name="ceo",
+        role="Chief Executive Officer — sets strategy, coordinates all departments",
+        subordinates={
+            "cto": cto,
+            "cmo": cmo,
+        },
+        temperature=0.3,
+    )
+    
+    return ceo
+
+
+# ── 5. LangGraph-based Hierarchical System ────────────────────
+
+class HierarchyState(TypedDict):
+    task: str
+    ceo_plan: str
+    tech_output: str
+    marketing_output: str
+    backend_code: str
+    frontend_code: str
+    qa_report: str
+    content: str
+    analytics: str
+    messages: Annotated[list, add_messages]
+    final_report: str
+
+
+def build_hierarchy_graph():
+    """LangGraph version — explicit nodes for each agent in the hierarchy."""
+    
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    
+    def make_node(agent_name: str, agent_role: str, input_key: str, output_key: str):
+        """Factory for simple agent nodes."""
+        def node_fn(state: HierarchyState) -> dict:
+            # Get input (from state or task)
+            task = state.get(input_key) or state["task"]
+            
+            console.print(f"  [bold]{agent_name.upper()}[/bold] working...")
+            
+            response = llm.invoke([
+                SystemMessage(content=f"You are {agent_name}, a {agent_role}. Be specific and thorough."),
+                HumanMessage(content=task),
+            ])
+            
+            return {output_key: response.content}
+        
+        node_fn.__name__ = agent_name
+        return node_fn
+    
+    # CEO node: creates the overall plan and sub-tasks
+    def ceo_node(state: HierarchyState) -> dict:
+        console.print(f"\n[bold red]👑 CEO: Planning task...[/bold red]")
+        
+        response = llm.invoke([
+            SystemMessage(content="""You are the CEO. Break the task into department assignments.
+Output a JSON object with keys: tech_task, marketing_task
+Each should be a specific, actionable task for that department."""),
+            HumanMessage(content=f"Company task: {state['task']}"),
+        ])
+        
+        try:
+            # Parse the CEO's task breakdown
+            text = response.content
+            # Extract JSON from the response
+            import re
+            json_match = re.search(r'\{.*\}', text, re.DOTALL)
+            if json_match:
+                tasks = json.loads(json_match.group())
+            else:
+                tasks = {
+                    "tech_task": f"Build the technical solution for: {state['task']}",
+                    "marketing_task": f"Create marketing strategy for: {state['task']}",
+                }
+        except Exception:
+            tasks = {
+                "tech_task": f"Build the technical solution for: {state['task']}",
+                "marketing_task": f"Create marketing strategy for: {state['task']}",
+            }
+        
+        return {
+            "ceo_plan": json.dumps(tasks, indent=2),
+            "tech_output": tasks.get("tech_task", ""),
+            "marketing_output": tasks.get("marketing_task", ""),
+        }
+    
+    # CTO node: coordinates tech work
+    def cto_node(state: HierarchyState) -> dict:
+        console.print(f"  [bold blue]🔧 CTO: Coordinating tech team...[/bold blue]")
+        
+        tech_task = state.get("tech_output") or state["task"]
+        response = llm.invoke([
+            SystemMessage(content="""You are the CTO. Break the tech task into:
+backend (API/database/logic) and frontend (UI/UX) sub-tasks.
+Output JSON: {"backend_task": "...", "frontend_task": "...", "qa_task": "..."}"""),
+            HumanMessage(content=tech_task),
+        ])
+        
+        try:
+            import re
+            json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
+            tasks = json.loads(json_match.group()) if json_match else {}
+        except Exception:
+            tasks = {}
+        
+        return {
+            "backend_code": tasks.get("backend_task", tech_task),
+            "frontend_code": tasks.get("frontend_task", tech_task),
+            "qa_report": tasks.get("qa_task", tech_task),
+        }
+    
+    # Leaf worker nodes
+    backend_node = make_node(
+        "backend_dev", "Python/API developer", "backend_code", "backend_code"
+    )
+    frontend_node = make_node(
+        "frontend_dev", "React/UI developer", "frontend_code", "frontend_code"
+    )
+    qa_node = make_node(
+        "qa_engineer", "QA/testing engineer", "qa_report", "qa_report"
+    )
+    content_node = make_node(
+        "content_writer", "marketing copywriter", "marketing_output", "content"
+    )
+    analytics_node = make_node(
+        "data_analyst", "market research analyst", "marketing_output", "analytics"
+    )
+    
+    # Final synthesis
+    def ceo_final_node(state: HierarchyState) -> dict:
+        console.print(f"\n[bold red]👑 CEO: Creating final report...[/bold red]")
+        
+        response = llm.invoke([
+            SystemMessage(content="You are the CEO. Synthesize all department outputs into an executive report."),
+            HumanMessage(content=f"""Task: {state['task']}
+
+Technical outputs:
+Backend: {state.get('backend_code', '')[:300]}
+Frontend: {state.get('frontend_code', '')[:300]}
+QA: {state.get('qa_report', '')[:300]}
+
+Marketing outputs:
+Content: {state.get('content', '')[:300]}
+Analytics: {state.get('analytics', '')[:300]}
+
+Write an executive summary integrating all of the above."""),
+        ])
+        
+        return {"final_report": response.content}
+    
+    # ── Build Graph ───────────────────────────────────────────
+    graph = StateGraph(HierarchyState)
+    
+    graph.add_node("ceo_plan",    ceo_node)
+    graph.add_node("cto",         cto_node)
+    graph.add_node("backend_dev", backend_node)
+    graph.add_node("frontend_dev",frontend_node)
+    graph.add_node("qa_engineer", qa_node)
+    graph.add_node("content_writer", content_node)
+    graph.add_node("data_analyst",   analytics_node)
+    graph.add_node("ceo_report",  ceo_final_node)
+    
+    # Flow: CEO plans → CTO and CMO in parallel
+    graph.add_edge(START, "ceo_plan")
+    graph.add_edge("ceo_plan", "cto")
+    graph.add_edge("ceo_plan", "content_writer")  # CMO path
+    graph.add_edge("ceo_plan", "data_analyst")    # CMO path
+    
+    # CTO → tech workers (parallel)
+    graph.add_edge("cto", "backend_dev")
+    graph.add_edge("cto", "frontend_dev")
+    graph.add_edge("cto", "qa_engineer")
+    
+    # All workers → CEO final report
+    graph.add_edge("backend_dev",     "ceo_report")
+    graph.add_edge("frontend_dev",    "ceo_report")
+    graph.add_edge("qa_engineer",     "ceo_report")
+    graph.add_edge("content_writer",  "ceo_report")
+    graph.add_edge("data_analyst",    "ceo_report")
+    
+    graph.add_edge("ceo_report", END)
+    
+    return graph.compile()
+
+
+# ── 6. Main Demo ──────────────────────────────────────────────
+
+if __name__ == "__main__":
+    console.print("[bold magenta]═══ 07: Hierarchical Agent System ═══[/bold magenta]")
+    
+    task = "Build and launch an AI-powered personal finance app that tracks spending, categorizes transactions, and gives personalized saving advice."
+    
+    console.print(f"\n[bold white]TASK:[/bold white] {task}\n")
+    
+    # Option A: Class-based hierarchy (elegant, recursive delegation)
+    console.print("\n[bold cyan]=== Approach A: Class-Based Hierarchy ===[/bold cyan]")
+    ceo = build_company_hierarchy()
+    result = ceo.execute(task)
+    
+    console.print(f"\n[bold green]CEO Final Report:[/bold green]")
+    console.print(result.result[:600])
+    
+    if result.sub_results:
+        console.print(f"\n[dim]Sub-results from {len(result.sub_results)} departments[/dim]")
+    
+    # Option B: LangGraph-based hierarchy (explicit, visualizable)
+    console.print("\n\n[bold cyan]=== Approach B: LangGraph Hierarchy Graph ===[/bold cyan]")
+    
+    graph = build_hierarchy_graph()
+    
+    graph_result = graph.invoke({
+        "task": task,
+        "ceo_plan": "",
+        "tech_output": "",
+        "marketing_output": "",
+        "backend_code": "",
+        "frontend_code": "",
+        "qa_report": "",
+        "content": "",
+        "analytics": "",
+        "messages": [],
+        "final_report": "",
+    })
+    
+    console.print(f"\n[bold green]Final Executive Report:[/bold green]")
+    console.print(graph_result["final_report"])
+</file>
+
+<file path="08_memory_agent.py">
+# ============================================================
+# 08_memory_agent.py
+# ─────────────────────────────────────────────────────────────
+# AGENTS WITH MEMORY — multiple memory types:
+#
+# 1. Short-term: conversation buffer (recent messages)
+# 2. Long-term:  persistent across sessions (vector store)
+# 3. Episodic:   remember specific past events
+# 4. Semantic:   factual knowledge about entities
+# 5. Procedural: how-to knowledge (skills learned over time)
+#
+# Architecture:
+#   User → [Memory Retrieval] → Agent → [Memory Store] → Response
+# ============================================================
+
+from config import OPENAI_API_KEY, GPT4O_MINI, console, print_step
+
+from typing import Annotated, Dict, List, Optional, Any
+from typing_extensions import TypedDict
+from datetime import datetime
+import json, uuid
+
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.tools import tool
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
+from pydantic import BaseModel, Field
+
+
+# ── 1. Memory Types ───────────────────────────────────────────
+
+class Memory(BaseModel):
+    """A single memory unit."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    memory_type: str   # "episodic", "semantic", "procedural"
+    content: str
+    importance: float  # 0.0 to 1.0
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+    tags: List[str] = Field(default_factory=list)
+    access_count: int = 0
+
+
+class MemoryState(TypedDict):
+    messages: Annotated[list, add_messages]
+    user_id: str
+    relevant_memories: List[str]
+    new_memories: List[str]
+    current_intent: str
+    entity_knowledge: Dict[str, str]
+
+
+# ── 2. Memory Store ───────────────────────────────────────────
+
+class MemoryStore:
+    """
+    Persistent vector-based memory store.
+    Uses FAISS for similarity search.
+    """
+    
+    def __init__(self, user_id: str):
+        self.user_id = user_id
+        self.embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
+        self.memories: Dict[str, Memory] = {}  # in-memory store
+        self.vector_store: Optional[FAISS] = None
+        self._initialize_example_memories()
+    
+    def _initialize_example_memories(self):
+        """Seed with some example memories."""
+        example_memories = [
+            Memory(
+                memory_type="semantic",
+                content="The user's name is Alex and they work as a software engineer.",
+                importance=0.9,
+                tags=["user_info", "name", "job"],
+            ),
+            Memory(
+                memory_type="semantic",
+                content="The user prefers Python over JavaScript and likes clean code.",
+                importance=0.8,
+                tags=["preferences", "programming"],
+            ),
+            Memory(
+                memory_type="episodic",
+                content="On 2024-01-15, the user asked for help debugging a FastAPI app that had CORS issues.",
+                importance=0.7,
+                tags=["fastapi", "debugging", "cors"],
+            ),
+            Memory(
+                memory_type="procedural",
+                content="When the user asks about code, provide runnable examples with comments.",
+                importance=0.85,
+                tags=["communication_style", "code"],
+            ),
+        ]
+        
+        for mem in example_memories:
+            self.store(mem)
+    
+    def store(self, memory: Memory) -> str:
+        """Store a new memory."""
+        self.memories[memory.id] = memory
+        
+        # Add to vector store for similarity search
+        doc = Document(
+            page_content=memory.content,
+            metadata={
+                "id": memory.id,
+                "type": memory.memory_type,
+                "importance": memory.importance,
+                "timestamp": memory.timestamp,
+                "tags": ",".join(memory.tags),
+            }
+        )
+        
+        if self.vector_store is None:
+            self.vector_store = FAISS.from_documents([doc], self.embeddings)
+        else:
+            self.vector_store.add_documents([doc])
+        
+        return memory.id
+    
+    def recall(self, query: str, k: int = 4, memory_type: str = None) -> List[Memory]:
+        """Retrieve memories similar to the query."""
+        if not self.vector_store:
+            return []
+        
+        try:
+            docs = self.vector_store.similarity_search(query, k=k*2)  # get extra, then filter
+        except Exception:
+            return []
+        
+        memories = []
+        for doc in docs:
+            mem_id = doc.metadata.get("id")
+            if mem_id and mem_id in self.memories:
+                mem = self.memories[mem_id]
+                if memory_type is None or mem.memory_type == memory_type:
+                    mem.access_count += 1
+                    memories.append(mem)
+        
+        # Sort by importance × recency
+        memories.sort(key=lambda m: m.importance, reverse=True)
+        return memories[:k]
+    
+    def forget(self, memory_id: str):
+        """Remove a memory (explicit forgetting)."""
+        if memory_id in self.memories:
+            del self.memories[memory_id]
+    
+    def consolidate(self):
+        """
+        Consolidate memories: merge similar ones, forget low-importance old ones.
+        This mimics sleep-based memory consolidation in humans.
+        """
+        # Remove low-importance memories that were never accessed
+        to_remove = [
+            mid for mid, mem in self.memories.items()
+            if mem.importance < 0.3 and mem.access_count == 0
+        ]
+        for mid in to_remove:
+            self.forget(mid)
+        
+        console.print(f"[dim]Consolidated: removed {len(to_remove)} low-importance memories[/dim]")
+    
+    def get_summary(self) -> str:
+        """Get a summary of stored memories."""
+        counts = {}
+        for mem in self.memories.values():
+            counts[mem.memory_type] = counts.get(mem.memory_type, 0) + 1
+        return f"Memory store: {counts} | Total: {len(self.memories)}"
+
+
+# ── 3. Memory Extraction ──────────────────────────────────────
+
+class MemoryExtraction(BaseModel):
+    """Memories to extract from a conversation turn."""
+    memories_to_store: List[dict] = Field(
+        description="New memories to store. Each dict: {content, type, importance, tags}"
+    )
+    entity_updates: Dict[str, str] = Field(
+        description="Updates to entity knowledge: {entity_name: updated_fact}"
+    )
+
+
+def extract_memories(conversation: str, llm: ChatOpenAI) -> MemoryExtraction:
+    """Extract storable memories from a conversation."""
+    structured_llm = llm.with_structured_output(MemoryExtraction)
+    
+    return structured_llm.invoke([
+        SystemMessage(content="""Extract memories worth storing from this conversation.
+
+Memory types:
+- episodic: specific events, interactions, dates ("User debugged X on DATE")
+- semantic: facts, preferences, knowledge ("User prefers Y", "User knows Z")  
+- procedural: behavioral patterns, communication preferences ("When user asks X, do Y")
+
+Only store genuinely useful, non-trivial information.
+Importance: 0.9 = critical, 0.7 = useful, 0.5 = maybe useful, 0.3 = marginally useful"""),
+        HumanMessage(content=f"Extract memories from:\n{conversation}"),
+    ])
+
+
+# ── 4. Build Memory-Augmented Agent ───────────────────────────
+
+def build_memory_agent(user_id: str = "user-default"):
+    """Build an agent with full memory capabilities."""
+    
+    memory_store = MemoryStore(user_id)
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.3, api_key=OPENAI_API_KEY)
+    
+    # ── Memory Retrieval Node ─────────────────────────────────
+    def memory_retrieval_node(state: MemoryState) -> dict:
+        """Fetch relevant memories before the agent responds."""
+        # Get the latest user message
+        user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+        if not user_messages:
+            return {"relevant_memories": []}
+        
+        latest = user_messages[-1].content
+        
+        # Retrieve relevant memories
+        memories = memory_store.recall(latest, k=5)
+        
+        if memories:
+            memory_texts = [
+                f"[{m.memory_type.upper()}] {m.content}" 
+                for m in memories
+            ]
+            console.print(f"  [dim]📚 Retrieved {len(memories)} memories[/dim]")
+        else:
+            memory_texts = []
+        
+        return {"relevant_memories": memory_texts}
+    
+    # ── Main Agent Node ───────────────────────────────────────
+    def agent_node(state: MemoryState) -> dict:
+        """The main agent, enhanced with retrieved memories."""
+        memories_text = "\n".join(state.get("relevant_memories", []))
+        entity_knowledge = state.get("entity_knowledge", {})
+        
+        # Build rich system prompt with memory context
+        memory_section = ""
+        if memories_text:
+            memory_section = f"""
+RELEVANT MEMORIES (retrieved from long-term memory):
+{memories_text}
+
+Use these memories to personalize your response and maintain continuity."""
+        
+        entity_section = ""
+        if entity_knowledge:
+            entity_section = f"""
+ENTITY KNOWLEDGE:
+{json.dumps(entity_knowledge, indent=2)}"""
+        
+        system = f"""You are a highly personalized AI assistant with persistent memory.
+You remember past conversations and use that context to provide better, more relevant help.
+
+{memory_section}
+{entity_section}
+
+Guidelines:
+- Reference relevant past context naturally (don't just list memories)
+- Maintain consistency with what you know about the user
+- Update your understanding as you learn new things
+- Be helpful, specific, and personalized"""
+        
+        response = llm.invoke([SystemMessage(content=system)] + state["messages"])
+        return {"messages": [response]}
+    
+    # ── Memory Storage Node ───────────────────────────────────
+    def memory_storage_node(state: MemoryState) -> dict:
+        """Extract and store new memories after the agent responds."""
+        messages = state["messages"]
+        
+        # Get the last exchange (user + assistant)
+        recent = messages[-4:]  # last 2 turns
+        conversation_text = "\n".join([
+            f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
+            for m in recent
+        ])
+        
+        try:
+            extraction = extract_memories(conversation_text, llm)
+            
+            stored = []
+            for mem_data in extraction.memories_to_store:
+                mem = Memory(
+                    memory_type=mem_data.get("type", "semantic"),
+                    content=mem_data.get("content", ""),
+                    importance=float(mem_data.get("importance", 0.5)),
+                    tags=mem_data.get("tags", []),
+                )
+                if mem.importance >= 0.4 and len(mem.content) > 20:
+                    memory_store.store(mem)
+                    stored.append(mem.content[:60])
+            
+            if stored:
+                console.print(f"  [dim]💾 Stored {len(stored)} new memories[/dim]")
+            
+            # Update entity knowledge
+            new_entities = {**state.get("entity_knowledge", {}), **extraction.entity_updates}
+            
+            return {
+                "new_memories": stored,
+                "entity_knowledge": new_entities,
+            }
+        except Exception as e:
+            console.print(f"  [dim]Memory extraction skipped: {e}[/dim]")
+            return {"new_memories": []}
+    
+    # ── Build Graph ───────────────────────────────────────────
+    graph = StateGraph(MemoryState)
+    
+    graph.add_node("retrieve_memory", memory_retrieval_node)
+    graph.add_node("agent",           agent_node)
+    graph.add_node("store_memory",    memory_storage_node)
+    
+    graph.add_edge(START,             "retrieve_memory")
+    graph.add_edge("retrieve_memory", "agent")
+    graph.add_edge("agent",           "store_memory")
+    graph.add_edge("store_memory",    END)
+    
+    # Add checkpointing for conversation continuity
+    checkpointer = MemorySaver()
+    compiled = graph.compile(checkpointer=checkpointer)
+    
+    return compiled, memory_store
+
+
+# ── 5. Entity Memory (knowledge graph-like) ───────────────────
+
+class EntityMemoryAgent:
+    """
+    Tracks specific entities (people, projects, concepts) across conversations.
+    Builds a knowledge graph of entity relationships.
+    """
+    
+    def __init__(self):
+        self.entities: Dict[str, Dict] = {}  # entity → {facts, relationships}
+        self.llm = ChatOpenAI(model=GPT4O_MINI, temperature=0.1, api_key=OPENAI_API_KEY)
+    
+    def update_entity(self, entity: str, fact: str):
+        """Add a fact about an entity."""
+        if entity not in self.entities:
+            self.entities[entity] = {"facts": [], "relationships": {}}
+        self.entities[entity]["facts"].append(fact)
+    
+    def add_relationship(self, entity1: str, relationship: str, entity2: str):
+        """Record a relationship between entities."""
+        if entity1 not in self.entities:
+            self.entities[entity1] = {"facts": [], "relationships": {}}
+        self.entities[entity1]["relationships"][relationship] = entity2
+    
+    def get_entity_context(self, text: str) -> str:
+        """Find entities mentioned in text and return their known facts."""
+        relevant = []
+        for entity, data in self.entities.items():
+            if entity.lower() in text.lower():
+                facts = "; ".join(data["facts"][-3:])  # last 3 facts
+                relevant.append(f"{entity}: {facts}")
+        return "\n".join(relevant) if relevant else ""
+    
+    def chat(self, user_input: str) -> str:
+        """Chat with entity memory active."""
+        entity_context = self.get_entity_context(user_input)
+        
+        context_section = f"\nKnown entities:\n{entity_context}" if entity_context else ""
+        
+        response = self.llm.invoke([
+            SystemMessage(content=f"You are a helpful assistant with memory of entities.{context_section}"),
+            HumanMessage(content=user_input),
+        ])
+        
+        # Extract and store new entity facts
+        extraction = self.llm.invoke([
+            SystemMessage(content="""Extract entities and facts from this exchange.
+Output JSON: {"entities": [{"name": "X", "fact": "Y"}], "relationships": [{"from": "A", "rel": "B", "to": "C"}]}
+If nothing notable: {"entities": [], "relationships": []}"""),
+            HumanMessage(content=f"User: {user_input}\nAssistant: {response.content}"),
+        ])
+        
+        try:
+            import re
+            json_match = re.search(r'\{.*\}', extraction.content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                for entity_data in data.get("entities", []):
+                    self.update_entity(entity_data["name"], entity_data["fact"])
+                for rel in data.get("relationships", []):
+                    self.add_relationship(rel["from"], rel["rel"], rel["to"])
+        except Exception:
+            pass
+        
+        return response.content
+
+
+# ── 6. Demo ───────────────────────────────────────────────────
+
+def run_memory_demo():
+    console.print("[bold magenta]═══ 08: Memory-Augmented Agents ═══[/bold magenta]")
+    
+    # ── Demo A: Vector Memory Agent ───────────────────────────
+    console.print("\n[bold cyan]=== A: Vector Long-Term Memory ===[/bold cyan]")
+    
+    graph, memory_store = build_memory_agent("user-alex")
+    config = {"configurable": {"thread_id": "alex-session-1"}}
+    
+    def chat(message: str):
+        initial = {
+            "messages": [HumanMessage(content=message)],
+            "user_id": "user-alex",
+            "relevant_memories": [],
+            "new_memories": [],
+            "current_intent": "",
+            "entity_knowledge": {},
+        }
+        result = graph.invoke(initial, config=config)
+        response = result["messages"][-1].content
+        console.print(f"\n[white]User:[/white] {message}")
+        console.print(f"[green]Agent:[/green] {response}\n")
+        return response
+    
+    # These messages will build up memories
+    chat("Hi! I'm working on a new Python REST API project using FastAPI.")
+    chat("I keep getting a 422 Unprocessable Entity error when I post JSON data.")
+    chat("My name is Alex by the way, and I love writing clean, well-documented code.")
+    
+    # New session — agent should remember from vector memory
+    config2 = {"configurable": {"thread_id": "alex-session-2"}}
+    
+    # Override initial state to simulate new session
+    result2 = graph.invoke({
+        "messages": [HumanMessage(content="Hey! Can you help me with my FastAPI project again?")],
+        "user_id": "user-alex",
+        "relevant_memories": [],
+        "new_memories": [],
+        "current_intent": "",
+        "entity_knowledge": {},
+    }, config=config2)
+    
+    console.print(f"\n[white]User (new session):[/white] Hey! Can you help me with my FastAPI project again?")
+    console.print(f"[green]Agent (remembers from memory!):[/green] {result2['messages'][-1].content}")
+    
+    # Memory summary
+    console.print(f"\n[dim]{memory_store.get_summary()}[/dim]")
+    
+    # ── Demo B: Entity Memory ─────────────────────────────────
+    console.print("\n\n[bold cyan]=== B: Entity Memory Agent ===[/bold cyan]")
+    
+    agent = EntityMemoryAgent()
+    
+    turns = [
+        "I'm working on a project called Phoenix with my colleague Sarah.",
+        "Sarah is a machine learning engineer and she's building the model layer.",
+        "Phoenix is a customer churn prediction system for our company Acme Corp.",
+        "Tell me what you know about the Phoenix project and Sarah's role.",
+    ]
+    
+    for turn in turns:
+        console.print(f"\n[white]User:[/white] {turn}")
+        response = agent.chat(turn)
+        console.print(f"[green]Agent:[/green] {response}")
+    
+    console.print(f"\n[dim]Entity store: {list(agent.entities.keys())}[/dim]")
+
+
+if __name__ == "__main__":
+    run_memory_demo()
+</file>
+
+<file path="09_agentic_rag.py">
+python
+
+# ============================================================
+# 09_agentic_rag.py
+# ─────────────────────────────────────────────────────────────
+# AGENTIC RAG (Retrieval-Augmented Generation)
+# Unlike naive RAG (retrieve → generate), agentic RAG can:
+# - Decide WHEN to retrieve
+# - Rephrase queries for better retrieval
+# - Retrieve MULTIPLE times iteratively
+# - Grade retrieved docs and retry if needed
+# - Combine multiple knowledge sources
+#
+# Patterns:
+#   A) Corrective RAG (CRAG): grades docs, web-searches if bad
+#   B) Self-RAG: decides whether to retrieve at all
+#   C) Adaptive RAG: routes to different retrievers by query type
+# ============================================================
+
+from config import OPENAI_API_KEY, GPT4O_MINI, console
+
+from typing import Annotated, List, Literal, Optional
+from typing_extensions import TypedDict
+
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.documents import Document
+from langchain_community.vectorstores import FAISS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langgraph.graph import StateGraph, START, END
+from pydantic import BaseModel, Field
+import json
+
+
+# ── 1. Build Knowledge Base ───────────────────────────────────
+
+SAMPLE_DOCUMENTS = [
+    """
+    LangChain is a framework for developing applications powered by language models.
+    It provides tools for chaining LLM calls, managing prompts, and integrating with external data.
+    LangChain supports multiple LLM providers including OpenAI, Anthropic, and Hugging Face.
+    Key components: chains, agents, tools, memory, and document loaders.
+    LangChain Expression Language (LCEL) is the new declarative syntax for building chains.
+    """,
+    """
+    LangGraph is a library built on top of LangChain for building stateful, multi-actor applications.
+    It models agent workflows as graphs where nodes are functions and edges control flow.
+    LangGraph supports cycles (loops), branching, parallel execution, and human-in-the-loop.
+    State is maintained across graph traversals using TypedDicts and reducers.
+    Key features: checkpointing, streaming, time-travel debugging, and persistence.
+    """,
+    """
+    Vector databases store high-dimensional embeddings for semantic similarity search.
+    Popular vector databases: Pinecone, Weaviate, Chroma, Qdrant, FAISS (local).
+    FAISS (Facebook AI Similarity Search) is an efficient local vector library.
+    Embeddings convert text into numerical vectors that capture semantic meaning.
+    OpenAI's text-embedding-3-small model produces 1536-dimensional vectors.
+    Cosine similarity measures how similar two vectors are, ranging from -1 to 1.
+    """,
+    """
+    Retrieval-Augmented Generation (RAG) improves LLM accuracy by providing relevant context.
+    Standard RAG pipeline: embed query → search vector DB → append docs → generate response.
+    Agentic RAG improves on this: the agent decides when/how to retrieve adaptively.
+    Corrective RAG (CRAG) grades retrieved documents and searches the web if docs are poor.
+    Self-RAG generates retrieval decisions as special tokens to control the pipeline.
+    Advanced RAG techniques: HyDE, query decomposition, fusion retrieval, reranking.
+    """,
+    """
+    Prompt engineering is the practice of designing effective prompts for language models.
+    Key techniques: chain-of-thought (CoT), few-shot examples, system instructions.
+    Advanced techniques: tree of thoughts, least-to-most prompting, self-consistency.
+    ReAct (Reason + Act) interleaves reasoning steps with tool calls.
+    Constitutional AI uses a set of principles to guide model behavior.
+    Prompt injection is an attack where malicious prompts override system instructions.
+    """,
+    """
+    OpenAI's GPT-4 is a multimodal large language model released in March 2023.
+    GPT-4o (Omni) is a faster, cheaper version supporting text, image, and audio.
+    Anthropic's Claude 3.5 Sonnet is known for strong coding and reasoning abilities.
+    Google's Gemini 1.5 Pro supports a 1 million token context window.
+    These models use transformer architecture with attention mechanisms.
+    Fine-tuning adapts pre-trained models to specific tasks using additional training data.
+    """,
+]
+
+
+def build_vector_store() -> FAISS:
+    """Build a local FAISS vector store from sample documents."""
+    embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
+    
+    splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
+    
+    docs = []
+    for i, text in enumerate(SAMPLE_DOCUMENTS):
+        chunks = splitter.split_text(text.strip())
+        for j, chunk in enumerate(chunks):
+            docs.append(Document(
+                page_content=chunk,
+                metadata={"source": f"doc_{i}", "chunk": j}
+            ))
+    
+    vector_store = FAISS.from_documents(docs, embeddings)
+    console.print(f"[dim]Vector store built with {len(docs)} chunks[/dim]")
+    return vector_store
+
+
+# ── 2. Document Grader ────────────────────────────────────────
+
+class DocumentGrade(BaseModel):
+    """Grade for a retrieved document."""
+    relevant: bool = Field(description="True if doc is relevant to the query")
+    score: float = Field(ge=0.0, le=1.0, description="Relevance score")
+    reason: str = Field(description="Why this score was given")
+
+
+def grade_document(doc: Document, query: str, llm: ChatOpenAI) -> DocumentGrade:
+    """Grade a retrieved document for relevance."""
+    grader = llm.with_structured_output(DocumentGrade)
+    
+    return grader.invoke([
+        SystemMessage(content="""Grade the relevance of a retrieved document to a user query.
+Score 0.8+ for highly relevant docs, 0.5-0.8 for somewhat relevant, <0.5 for irrelevant."""),
+        HumanMessage(content=f"Query: {query}\n\nDocument:\n{doc.page_content}"),
+    ])
+
+
+# ── 3A. Corrective RAG (CRAG) ─────────────────────────────────
+
+class CRAGState(TypedDict):
+    question: str
+    retrieved_docs: List[Document]
+    graded_docs: List[Document]
+    web_search_needed: bool
+    web_results: str
+    generation: str
+    attempts: int
+
+
+def build_crag_graph(vector_store: FAISS):
+    """
+    Corrective RAG: grade docs after retrieval, web-search if poor quality.
+    """
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+    
+    # ── Node: Retrieve ────────────────────────────────────────
+    def retrieve_node(state: CRAGState) -> dict:
+        console.print(f"  [blue]📥 Retrieving docs for:[/blue] {state['question'][:60]}...")
+        
+        docs = retriever.invoke(state["question"])
+        return {"retrieved_docs": docs, "attempts": state.get("attempts", 0) + 1}
+    
+    # ── Node: Grade Documents ─────────────────────────────────
+    def grade_docs_node(state: CRAGState) -> dict:
+        console.print(f"  [yellow]🔍 Grading {len(state['retrieved_docs'])} docs...[/yellow]")
+        
+        good_docs = []
+        for doc in state["retrieved_docs"]:
+            grade = grade_document(doc, state["question"], llm)
+            if grade.relevant:
+                good_docs.append(doc)
+                console.print(f"    [green]✓[/green] Score {grade.score:.2f}: {doc.page_content[:50]}...")
+            else:
+                console.print(f"    [red]✗[/red] Score {grade.score:.2f}: {doc.page_content[:50]}...")
+        
+        # Need web search if fewer than 2 good docs
+        web_needed = len(good_docs) < 2
+        
+        return {
+            "graded_docs": good_docs,
+            "web_search_needed": web_needed,
+        }
+    
+    # ── Node: Web Search ──────────────────────────────────────
+    def web_search_node(state: CRAGState) -> dict:
+        console.print(f"  [magenta]🌐 Poor retrieval — searching web...[/magenta]")
+        
+        try:
+            from duckduckgo_search import DDGS
+            with DDGS() as ddgs:
+                results = list(ddgs.text(state["question"], max_results=3))
+            web_text = "\n\n".join(f"{r['title']}: {r['body']}" for r in results)
+        except Exception as e:
+            web_text = f"Web search failed: {e}. Using LLM knowledge instead."
+        
+        return {"web_results": web_text}
+    
+    # ── Node: Rewrite Query (for better retrieval) ────────────
+    def rewrite_query_node(state: CRAGState) -> dict:
+        console.print(f"  [cyan]✏️  Rewriting query for better retrieval...[/cyan]")
+        
+        response = llm.invoke([
+            SystemMessage(content="""You are a query optimization expert.
+Rewrite the query to be more specific and retrieve better results from a vector database.
+Focus on key technical terms and concepts."""),
+            HumanMessage(content=f"Original query: {state['question']}\nWrite a better query:"),
+        ])
+        
+        return {"question": response.content.strip()}
+    
+    # ── Node: Generate Answer ─────────────────────────────────
+    def generate_node(state: CRAGState) -> dict:
+        console.print(f"  [green]💡 Generating answer...[/green]")
+        
+        # Combine docs and web results
+        context_parts = []
+        
+        if state.get("graded_docs"):
+            doc_texts = "\n\n".join(d.page_content for d in state["graded_docs"])
+            context_parts.append(f"From knowledge base:\n{doc_texts}")
+        
+        if state.get("web_results"):
+            context_parts.append(f"From web search:\n{state['web_results']}")
+        
+        context = "\n\n---\n\n".join(context_parts) if context_parts else "No context retrieved."
+        
+        response = llm.invoke([
+            SystemMessage(content="""You are a knowledgeable assistant.
+Answer the question based on the provided context.
+If the context doesn't fully answer the question, say so and provide what you know.
+Be accurate, concise, and cite which context supported your answer."""),
+            HumanMessage(content=f"Question: {state['question']}\n\nContext:\n{context}"),
+        ])
+        
+        return {"generation": response.content}
+    
+    # ── Routing ───────────────────────────────────────────────
+    def route_after_grading(state: CRAGState) -> str:
+        if state["web_search_needed"]:
+            if state.get("attempts", 0) <= 1:
+                return "rewrite"  # try rewriting query first
+            return "web_search"   # then web search
+        return "generate"
+    
+    # ── Build Graph ───────────────────────────────────────────
+    graph = StateGraph(CRAGState)
+    
+    graph.add_node("retrieve",  retrieve_node)
+    graph.add_node("grade",     grade_docs_node)
+    graph.add_node("rewrite",   rewrite_query_node)
+    graph.add_node("web_search", web_search_node)
+    graph.add_node("generate",  generate_node)
+    
+    graph.add_edge(START, "retrieve")
+    graph.add_edge("retrieve", "grade")
+    
+    graph.add_conditional_edges(
+        "grade",
+        route_after_grading,
+        {"rewrite": "rewrite", "web_search": "web_search", "generate": "generate"}
+    )
+    
+    graph.add_edge("rewrite", "retrieve")  # retry retrieval with better query
+    graph.add_edge("web_search", "generate")
+    graph.add_edge("generate", END)
+    
+    return graph.compile()
+
+
+# ── 3B. Self-RAG ──────────────────────────────────────────────
+
+class SelfRAGState(TypedDict):
+    question: str
+    needs_retrieval: bool
+    retrieved_docs: List[Document]
+    generation: str
+    is_grounded: bool
+    is_useful: bool
+
+
+def build_self_rag_graph(vector_store: FAISS):
+    """
+    Self-RAG: the model decides whether retrieval is needed at all.
+    Also checks if the generated answer is grounded and useful.
+    """
+    llm = ChatOpenAI(model=GPT4O_MINI, temperature=0, api_key=OPENAI_API_KEY)
+    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+    
+    class RetrievalDecision(BaseModel):
+        needs_retrieval: bool
+        reason: str
+    
+    class GroundingCheck(BaseModel):
+        is_grounded: bool       # answer supported by docs
+        is_useful: bool         # answer actually helps the user
+        reason: str
+    
+    def decide_retrieval_node(state: SelfRAGState) -> dict:
+        """Decide if retrieval is needed for this question."""
+        decision_llm = llm.with_structured_output(RetrievalDecision)
+        
+        decision = decision_llm.invoke([
+            SystemMessage(content="""Decide if retrieval from a knowledge base is needed.
+Retrieval IS needed: specific factual questions, technical details, recent info
+Retrieval NOT needed: general knowledge, math, creative tasks, simple questions"""),
+            HumanMessage(content=f"Question: {state['question']}"),
+        ])
+        
+        icon = "📥" if decision.needs_retrieval else "🧠"
+        console.print(f"  {icon} Retrieval needed: {decision.needs_retrieval} — {decision.reason}")
+        
+        return {"needs_retrieval": decision.needs_retrieval}
+    
+    def retrieve_node(state: SelfRAGState) -> dict:
+        docs = retriever.invoke(state["question"])
+        return {"retrieved_docs": docs}
+    
+    def generate_node(state: SelfRAGState) -> dict:
+        context = ""
+        if state.get("retrieved_docs"):
+            context = "Context:\n" + "\n\n".join(
+                d.page_content for d in state["retrieved_docs"]
+            )
+        
+        response = llm.invoke([
+            SystemMessage(content="Answer the question accurately and helpfully."),
+            HumanMessage(content=f"{context}\n\nQuestion: {state['question']}" if context else state["question"]),
+        ])
+        return {"generation": response.content}
+    
+    def check_grounding_node(state: SelfRAGState) -> dict:
+        """Check if the answer is grounded in retrieved docs."""
+        if not state.get("retrieved_docs"):
+            return {"is_grounded": True, "is_useful": True}  # no docs → skip check
+        
+        check_llm = llm.with_structured_output(GroundingCheck)
+        
+        doc_text = "\n".join(d.page_content for d in state["retrieved_docs"])
+        
+        check = check_llm.invoke([
+            SystemMessage(content="""Check if the answer is:
+1. Grounded: supported by the provided documents (not hallucinated)
+2. Useful: actually answers the question helpfully"""),
+            HumanMessage(content=f"""Question: {state['question']}
+Documents: {doc_text[:500]}
+Answer: {state['generation']}"""),
+        ])
+        
+        console.print(f"  {'✅' if check.is_grounded and check.is_useful else '⚠️'} Grounded: {check.is_grounded}, Useful: {check.is_useful}")
+        
+        return {"is_grounded": check.is_grounded, "is_useful": check.is_useful}
+    
+    def route_generation(state: SelfRAGState) -> str:
+        if not state.get("is_grounded") or not state.get("is_useful"):
+            return "regenerate"
+        return "end"
+    
+    graph = StateGraph(SelfRAGState)
+    
+    graph.add_node("decide_retrieval", decide_retrieval_node)
+    graph.add_node("retrieve",         retrieve_node)
+    graph.add_node("generate",         generate_node)
+    graph.add_node("check",            check_grounding_node)
+    
+    graph.add_edge(START, "decide_retrieval")
+    
+    graph.add_conditional_edges(
+        "decide_retrieval",
+        lambda s: "retrieve" if s["needs_retrieval"] else "generate",
+        {"retrieve": "retrieve", "generate": "generate"}
+    )
+    
+    graph.add_edge("retrieve", "generate")
+    graph.add_edge("generate", "check")
+    
+    graph.add_conditional_edges(
+        "check",
+        route_generation,
+        {"regenerate": "generate", "end": END}  # retry once if not grounded
+    )
+    
+    return graph.compile()
+
+
+# ── 4. Demo ───────────────────────────────────────────────────
+
+def run_rag_demo():
+    console.print("[bold magenta]═══ 09: Agentic RAG ═══[/bold magenta]")
+    
+    vs = build_vector_store()
+    
+    questions = [
+        "What is LangGraph and how does it differ from LangChain?",
+        "What is Corrective RAG and why is it useful?",
+        "How does vector similarity search work?",
+        "What is the weather like today in Paris?",  # not in KB → web search
+    ]
+    
+    # ── CRAG Demo ─────────────────────────────────────────────
+    console.print("\n[bold cyan]=== Corrective RAG ===[/bold cyan]")
+    crag = build_crag_graph(vs)
+    
+    for q in questions[:3]:
+        console.print(f"\n[white]Q:[/white] {q}")
+        result = crag.invoke({
+            "question": q, "retrieved_docs": [], "graded_docs": [],
+            "web_search_needed": False, "web_results": "", "generation": "", "attempts": 0,
+        })
+        console.print(f"[green]A:[/green] {result['generation'][:300]}...\n")
+    
+    # ── Self-RAG Demo ─────────────────────────────────────────
+    console.print("\n[bold cyan]=== Self-RAG ===[/bold cyan]")
+    self_rag = build_self_rag_graph(vs)
+    
+    test_questions = [
+        "Explain LangGraph's checkpointing feature.",  # needs retrieval
+        "What is 15 factorial?",                       # doesn't need retrieval
+    ]
+    
+    for q in test_questions:
+        console.print(f"\n[white]Q:[/white] {q}")
+        result = self_rag.invoke({
+            "question": q, "needs_retrieval": False, "retrieved_docs": [],
+            "generation": "", "is_grounded": True, "is_useful": True,
+        })
+        console.print(f"[green]A:[/green] {result['generation'][:300]}...")
+
+
+if __name__ == "__main__":
+    run_rag_demo()
+</file>
+
+<file path="config.py">
+# ============================================================
+# config.py — Shared configuration & fake credentials
+# Replace fake keys with real ones before running
+# ============================================================
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ── API Keys (fake placeholders — swap for real) ──────────────
+OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY",    "sk-fake-openai-key-1234567890abcdef")
+ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "sk-ant-fake-anthropic-key-abcdef1234")
+TAVILY_API_KEY      = os.getenv("TAVILY_API_KEY",    "tvly-fake-tavily-key-abcdef1234")
+LANGSMITH_API_KEY   = os.getenv("LANGSMITH_API_KEY", "lsv2-fake-langsmith-key-abcdef")
+
+# ── Model names ───────────────────────────────────────────────
+GPT4O               = "gpt-4o"
+GPT4O_MINI          = "gpt-4o-mini"
+CLAUDE_SONNET       = "claude-3-5-sonnet-20241022"
+CLAUDE_HAIKU        = "claude-3-5-haiku-20241022"
+
+# ── LangSmith tracing (optional but recommended) ──────────────
+os.environ["OPENAI_API_KEY"]            = OPENAI_API_KEY
+os.environ["ANTHROPIC_API_KEY"]         = ANTHROPIC_API_KEY
+os.environ["TAVILY_API_KEY"]            = TAVILY_API_KEY
+os.environ["LANGCHAIN_TRACING_V2"]      = "true"
+os.environ["LANGCHAIN_API_KEY"]         = LANGSMITH_API_KEY
+os.environ["LANGCHAIN_PROJECT"]         = "agentic-ai-examples"
+
+# ── Pretty printing helper ────────────────────────────────────
+from rich.console import Console
+from rich.panel import Panel
+from rich.syntax import Syntax
+
+console = Console()
+
+def print_step(title: str, content: str, color: str = "cyan"):
+    console.print(Panel(content, title=f"[bold {color}]{title}[/bold {color}]", border_style=color))
+
+def print_agent_message(agent: str, message: str):
+    colors = {
+        "supervisor": "red",
+        "researcher": "blue",
+        "coder":      "green",
+        "critic":     "yellow",
+        "planner":    "magenta",
+        "executor":   "cyan",
+        "user":       "white",
+    }
+    color = colors.get(agent.lower(), "white")
+    console.print(f"\n[bold {color}][{agent.upper()}][/bold {color}] {message}")
+</file>
+
+<file path="requirements.txt">
+# ============================================================
+# Agentic AI Requirements
+# LangChain + LangGraph Full Stack
+# ============================================================
+
+# Core LangChain
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-openai>=0.2.0
+langchain-anthropic>=0.3.0
+
+# LangGraph (multi-agent orchestration)
+langgraph>=0.2.0
+langgraph-checkpoint>=1.0.0
+langgraph-checkpoint-sqlite>=1.0.0   # persistent memory
+langgraph-checkpoint-postgres>=2.0.0  # production memory
+
+# LLM Providers
+openai>=1.50.0
+anthropic>=0.37.0
+
+# Tools & Integrations
+tavily-python>=0.5.0      # web search
+duckduckgo-search>=6.0.0  # free web search
+wikipedia>=1.4.0
+requests>=2.32.0
+httpx>=0.27.0
+
+# Vector stores & embeddings
+faiss-cpu>=1.8.0
+chromadb>=0.5.0
+tiktoken>=0.7.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.8.0
+rich>=13.0.0              # pretty terminal output
+colorama>=0.4.6
+
+# Optional: Tracing
+langsmith>=0.1.0
+</file>
+
+</files>
